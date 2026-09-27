@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { BARCELONA_LINES, BARCELONA_STOPS } from './src/data/barcelonaTransit';
+import { tmbService } from './server/tmbService';
 
 dotenv.config();
 
@@ -11,153 +11,100 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Transit API endpoints
-app.get('/api/transit/status', (req, res) => {
-  const tmbConfigured = Boolean(process.env.TMB_APP_ID && process.env.TMB_APP_KEY);
-  const emtConfigured = Boolean(process.env.EMT_MADRID_CLIENT_ID && process.env.EMT_MADRID_PASSKEY);
+// Boot background load of TMB transit lines and stops immediately
+tmbService.loadFullNetwork().catch((err) => {
+  console.warn('[Server] Initial TMB background load notice:', err?.message || err);
+});
+
+// Transit API status endpoint
+app.get('/api/transit/status', async (req, res) => {
+  const status = tmbService.getStatus();
+
+  // If not yet verified and configured, trigger a quick verify or load
+  if (status.configured && !status.verified && !status.isLoading) {
+    tmbService.loadFullNetwork().catch(() => {});
+  }
 
   res.json({
     status: 'ok',
     primaryCity: 'Barcelona',
-    coverage: ['Barcelona (TMB)', 'Madrid (EMT)', 'España'],
+    coverage: ['Barcelona (TMB iBus Oficial)'],
     tmb: {
-      configured: tmbConfigured,
-      appIdProvided: Boolean(process.env.TMB_APP_ID),
-      providerName: 'Transports Metropolitans de Barcelona (TMB iBus)',
-      portalUrl: 'https://developer.tmb.cat/',
+      configured: status.configured,
+      verified: status.verified,
+      appIdProvided: status.appIdProvided,
+      providerName: status.providerName,
+      portalUrl: status.portalUrl,
+      statusNote: status.statusNote,
+      linesCount: status.linesCount,
+      stopsCount: status.stopsCount,
+      lastUpdated: status.lastUpdated,
+      isLoading: status.isLoading,
     },
-    emt: {
-      configured: emtConfigured,
-      providerName: 'EMT Madrid MobilityLabs',
-      portalUrl: 'https://mobilitylabs.emtmadrid.es/',
-    },
-    message: tmbConfigured
-      ? 'Conexión activa con la API oficial TMB iBus de Barcelona.'
-      : 'Red TMB de Barcelona sincronizada. Configura TMB_APP_ID y TMB_APP_KEY para conectar con la API en vivo.',
+    message: status.configured
+      ? (status.verified
+          ? `Conexión oficial activa con TMB Barcelona: ${status.linesCount} líneas y ${status.stopsCount} paradas en tiempo real.`
+          : status.statusNote)
+      : 'Red oficial TMB Barcelona activa. Para tiempos en directo por GPS, añade tus claves de developer.tmb.cat en .env.',
   });
 });
 
-// Barcelona stops list
-app.get('/api/transit/barcelona/stops', (req, res) => {
+// Barcelona all lines list (126+ lines from TMB)
+app.get('/api/transit/barcelona/lines', async (req, res) => {
+  if (req.query.refresh === 'true') {
+    await tmbService.loadFullNetwork(true);
+  }
+  const lines = tmbService.getLines();
   res.json({
     success: true,
-    total: BARCELONA_STOPS.length,
-    stops: BARCELONA_STOPS,
+    total: lines.length,
+    lines,
   });
 });
 
-// Barcelona lines list
-app.get('/api/transit/barcelona/lines', (req, res) => {
+// Barcelona all stops list (2,719+ stops from TMB)
+app.get('/api/transit/barcelona/stops', async (req, res) => {
+  if (req.query.refresh === 'true') {
+    await tmbService.loadFullNetwork(true);
+  }
+
+  const lat = req.query.lat ? Number(req.query.lat) : undefined;
+  const lng = req.query.lng ? Number(req.query.lng) : undefined;
+  const radius = req.query.radius ? Number(req.query.radius) : undefined;
+
+  const stops = tmbService.getStops({
+    lat,
+    lng,
+    radiusMeters: radius,
+  });
+
   res.json({
     success: true,
-    total: BARCELONA_LINES.length,
-    lines: BARCELONA_LINES,
+    total: stops.length,
+    stops,
   });
 });
 
 // Real-time arrivals for a Barcelona stop by code
 app.get('/api/transit/barcelona/arrivals/:stopCode', async (req, res) => {
-  const stopCode = req.params.stopCode.replace(/^0+/, '') || req.params.stopCode; // normalize code e.g. "0001" -> "1" or "0001"
-  const formattedCode = stopCode.padStart(4, '0');
+  const result = await tmbService.getRealtimeArrivals(req.params.stopCode);
+  res.json(result);
+});
 
-  const stop = BARCELONA_STOPS.find(
-    (s) => s.code === stopCode || s.code === formattedCode || s.id === `stop-${formattedCode}`
-  );
-
-  const tmbAppId = process.env.TMB_APP_ID;
-  const tmbAppKey = process.env.TMB_APP_KEY;
-
-  // 1. If TMB credentials exist, query the official TMB iBus API
-  if (tmbAppId && tmbAppKey) {
-    try {
-      const tmbUrl = `https://api.tmb.cat/v1/ibus/stops/${encodeURIComponent(stopCode)}?app_id=${encodeURIComponent(tmbAppId)}&app_key=${encodeURIComponent(tmbAppKey)}`;
-      const response = await fetch(tmbUrl, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(4500),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        const rawItems = data?.data?.ibus || data?.ibus || [];
-
-        if (Array.isArray(rawItems) && rawItems.length > 0) {
-          const arrivals = rawItems.map((item: any, idx: number) => {
-            const lineCode = String(item.line || item['line-id'] || 'BUS');
-            const lineInfo = BARCELONA_LINES.find((l) => l.code.toUpperCase() === lineCode.toUpperCase());
-            const mins = Number(item['t-in-min'] ?? Math.round((item['t-in-s'] || 120) / 60));
-            const secs = Number(item['t-in-s'] ?? mins * 60);
-
-            return {
-              id: `tmb-live-${stopCode}-${lineCode}-${idx}`,
-              lineId: lineInfo?.id || `line-${lineCode}`,
-              lineCode,
-              destination: item.destination || lineInfo?.destination || 'Destí TMB',
-              etaSeconds: secs,
-              distanceMeters: Math.max(100, mins * 380),
-              busPlate: item.plate || `TMB-${lineCode}-${1000 + idx * 43}`,
-              occupancy: 'medium' as const,
-              isAccessible: true,
-              busLocation: [
-                (stop?.lat || 41.3879) + (Math.random() - 0.5) * 0.005,
-                (stop?.lng || 2.1699) + (Math.random() - 0.5) * 0.005,
-              ] as [number, number],
-              speedKmh: 24,
-              lineColor: lineInfo?.color || '#2563eb',
-              lineTextColor: '#ffffff',
-              source: 'tmb_live',
-            };
-          });
-
-          return res.json({
-            success: true,
-            isLive: true,
-            provider: 'TMB iBus Live API',
-            stopCode,
-            arrivals: arrivals.sort((a, b) => a.etaSeconds - b.etaSeconds),
-          });
-        }
-      }
-    } catch (err) {
-      console.warn('TMB API Live Fetch error or timeout, using high-precision fallback:', err);
-    }
+// Manual refresh trigger
+app.post('/api/transit/barcelona/refresh', async (req, res) => {
+  try {
+    await tmbService.loadFullNetwork(true);
+    const status = tmbService.getStatus();
+    res.json({
+      success: true,
+      linesCount: status.linesCount,
+      stopsCount: status.stopsCount,
+      statusNote: status.statusNote,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Error refreshing TMB data' });
   }
-
-  // 2. High-precision fallback for Barcelona bus stops
-  // Generates real-time arrivals based on line schedules & active fleet
-  const relevantLines = stop?.lines || ['H12', 'V15', '24'];
-  const arrivals = relevantLines.map((lineCode, idx) => {
-    const line = BARCELONA_LINES.find((l) => l.code === lineCode);
-    const baseMins = (idx * 3 + Math.floor(Math.random() * 4) + 1);
-    const etaSec = baseMins * 60 + Math.floor(Math.random() * 45);
-
-    return {
-      id: `bcn-tmb-${stopCode}-${lineCode}-${idx}`,
-      lineId: line?.id || `line-${lineCode}`,
-      lineCode,
-      destination: line?.destination || 'Centre Ciutat',
-      etaSeconds: etaSec,
-      distanceMeters: Math.round(baseMins * 360),
-      busPlate: `BCN-${1200 + idx * 110 + (Number(stopCode) % 80)}`,
-      occupancy: idx % 3 === 0 ? 'low' : idx % 2 === 0 ? 'medium' : 'high',
-      isAccessible: true,
-      busLocation: [
-        (stop?.lat || 41.3879) + (Math.random() - 0.5) * 0.004,
-        (stop?.lng || 2.1699) + (Math.random() - 0.5) * 0.004,
-      ] as [number, number],
-      speedKmh: Math.floor(22 + Math.random() * 12),
-      lineColor: line?.color || '#2563eb',
-      lineTextColor: line?.textColor || '#ffffff',
-      source: tmbAppId ? 'tmb_live_simulated' : 'tmb_network',
-    };
-  });
-
-  return res.json({
-    success: true,
-    isLive: false,
-    provider: tmbAppId ? 'TMB iBus (Simulación / Timeout)' : 'TMB Barcelona (Red Local)',
-    stopCode,
-    arrivals: arrivals.sort((a, b) => a.etaSeconds - b.etaSeconds),
-  });
 });
 
 // Vite middleware setup

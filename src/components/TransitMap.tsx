@@ -1,9 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { LocateFixed } from 'lucide-react';
+import { LocateFixed, Layers } from 'lucide-react';
 import { BusStop, BusLine, LiveBus, UserPosition } from '../types/transit';
+import { getDistanceMeters } from '../utils/geo';
 
 interface TransitMapProps {
+  center?: [number, number];
   userLocation: UserPosition | null;
   stops: BusStop[];
   lines: BusLine[];
@@ -19,6 +21,7 @@ interface TransitMapProps {
 }
 
 export const TransitMap: React.FC<TransitMapProps> = ({
+  center,
   userLocation,
   stops,
   lines,
@@ -34,6 +37,9 @@ export const TransitMap: React.FC<TransitMapProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  const [mapViewBounds, setMapViewBounds] = useState<L.LatLngBounds | null>(null);
+  const [mapZoom, setMapZoom] = useState<number>(16);
 
   // Layer groups for clean updates
   const userLayerRef = useRef<L.LayerGroup | null>(null);
@@ -42,12 +48,12 @@ export const TransitMap: React.FC<TransitMapProps> = ({
   const routesLayerRef = useRef<L.LayerGroup | null>(null);
   const radiusLayerRef = useRef<L.LayerGroup | null>(null);
 
-  // Initialize Map
+  // Initialize Map with Barcelona Plaça de Catalunya coordinates
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialLat = userLocation?.lat || 40.4194;
-    const initialLng = userLocation?.lng || -3.7038;
+    const initialLat = userLocation?.lat || center?.[0] || 41.3879;
+    const initialLng = userLocation?.lng || center?.[1] || 2.1699;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -57,6 +63,15 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     });
 
     mapInstanceRef.current = map;
+
+    // Track bounds for performant rendering of Barcelona stops
+    const handleMove = () => {
+      setMapViewBounds(map.getBounds());
+      setMapZoom(map.getZoom());
+    };
+    map.on('moveend', handleMove);
+    map.on('zoomend', handleMove);
+    map.whenReady(handleMove);
 
     // Create Layer Groups
     routesLayerRef.current = L.layerGroup().addTo(map);
@@ -78,7 +93,20 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     };
   }, []);
 
-  // Handle Tile Layer changes (Dark mode vs Light mode)
+  // Center change listener (e.g. user selects a Barcelona hub)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || !center) return;
+    map.flyTo(center, Math.max(15, map.getZoom() || 16), {
+      animate: true,
+      duration: 0.8,
+    });
+  }, [center?.[0], center?.[1]]);
+
+  const [mapStyle, setMapStyle] = useState<'streets' | 'satellite'>('streets');
+
+  // Handle Tile Layer changes (Dark mode vs Light mode & Street vs Satellite)
+  // Uses open tiles (OpenStreetMap & Esri) which do not require any API keys.
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -87,18 +115,27 @@ export const TransitMap: React.FC<TransitMapProps> = ({
       map.removeLayer(tileLayerRef.current);
     }
 
-    const tileUrl = isDarkMode
-      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-      : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-
-    const tileLayer = L.tileLayer(tileUrl, {
+    let tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    let tileOptions: L.TileLayerOptions = {
       maxZoom: 19,
-      subdomains: 'abcd',
-    });
+      subdomains: ['a', 'b', 'c'],
+      attribution: '&copy; OpenStreetMap contributors',
+      className: isDarkMode ? 'leaflet-tile-dark' : 'leaflet-tile-light',
+    };
 
+    if (mapStyle === 'satellite') {
+      tileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+      tileOptions = {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri',
+        className: 'leaflet-tile-light',
+      };
+    }
+
+    const tileLayer = L.tileLayer(tileUrl, tileOptions);
     tileLayer.addTo(map);
     tileLayerRef.current = tileLayer;
-  }, [isDarkMode]);
+  }, [isDarkMode, mapStyle]);
 
   // Update User Location & Accuracy Circle
   useEffect(() => {
@@ -152,20 +189,31 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     });
     group.addLayer(accuracyCircle);
 
-    // Search Radius visual guide circle
+    // Search Radius visual guide circle around user location or current map center
     if (radiusLayerRef.current) {
       radiusLayerRef.current.clearLayers();
-      const searchCircle = L.circle([userLocation.lat, userLocation.lng], {
+      const circleLat = userLocation?.lat ?? center?.[0] ?? 41.3879;
+      const circleLng = userLocation?.lng ?? center?.[1] ?? 2.1699;
+
+      const searchCircle = L.circle([circleLat, circleLng], {
         radius: searchRadius,
-        color: '#60a5fa',
+        color: '#3b82f6',
         weight: 1.5,
-        dashArray: '4, 8',
-        fillColor: '#60a5fa',
-        fillOpacity: 0.03,
+        dashArray: '5, 8',
+        fillColor: '#3b82f6',
+        fillOpacity: 0.04,
       });
+
+      const radiusLabel = searchRadius >= 1000 ? `${(searchRadius / 1000).toFixed(1)} km` : `${searchRadius} m`;
+      searchCircle.bindTooltip(`Radio de búsqueda: ${radiusLabel}`, {
+        permanent: false,
+        direction: 'top',
+        className: 'leaflet-radius-tooltip',
+      });
+
       radiusLayerRef.current.addLayer(searchCircle);
     }
-  }, [userLocation, searchRadius]);
+  }, [userLocation, center, searchRadius]);
 
   // Update Bus Stops
   useEffect(() => {
@@ -174,20 +222,57 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
     group.clearLayers();
 
-    stops.forEach((stop) => {
-      const isSelected = selectedStop?.id === stop.id;
+    const originLat = userLocation?.lat ?? center?.[0];
+    const originLng = userLocation?.lng ?? center?.[1];
 
+    const selectedLineStopIds = new Set(selectedLine ? selectedLine.stops : []);
+    const paddedBounds = mapViewBounds ? mapViewBounds.pad(0.2) : null;
+
+    // Filter stops to render smoothly
+    const stopsToRender: { stop: BusStop; isWithinRadius: boolean; isSelected: boolean }[] = [];
+
+    for (const stop of stops) {
+      const isSelected = selectedStop?.id === stop.id;
+      const isOnSelectedLine = selectedLineStopIds.has(stop.id);
+
+      let isWithinRadius = false;
+      if (originLat !== undefined && originLng !== undefined) {
+        const distMeters = getDistanceMeters(originLat, originLng, stop.lat, stop.lng);
+        isWithinRadius = distMeters <= searchRadius;
+      }
+
+      // Always include selected stop, stops on selected line, or within user search radius
+      if (isSelected || isOnSelectedLine || isWithinRadius) {
+        stopsToRender.push({ stop, isWithinRadius, isSelected });
+        continue;
+      }
+
+      // Include viewport stops if zoomed in (up to 350)
+      if (paddedBounds && paddedBounds.contains([stop.lat, stop.lng])) {
+        if (mapZoom >= 14 && stopsToRender.length < 350) {
+          stopsToRender.push({ stop, isWithinRadius: false, isSelected: false });
+        } else if (mapZoom < 14 && stopsToRender.length < 60) {
+          stopsToRender.push({ stop, isWithinRadius: false, isSelected: false });
+        }
+      }
+    }
+
+    stopsToRender.forEach(({ stop, isWithinRadius, isSelected }) => {
       // Custom Stop Pin
       const stopIcon = L.divIcon({
         className: 'custom-stop-marker',
         html: `
-          <div class="cursor-pointer transition-transform duration-200 hover:scale-110 flex flex-col items-center group">
+          <div class="cursor-pointer transition-transform duration-200 hover:scale-110 flex flex-col items-center group ${
+            isWithinRadius ? 'opacity-100' : 'opacity-40 hover:opacity-90'
+          }">
             <div class="flex items-center justify-center w-7 h-7 rounded-full shadow-md border-2 transition-all ${
               isSelected
                 ? 'bg-amber-500 border-white ring-4 ring-amber-500/40 scale-125 z-50'
-                : 'bg-slate-800 border-blue-400 text-white hover:border-amber-400'
+                : isWithinRadius
+                ? 'bg-slate-800 border-blue-400 text-white hover:border-amber-400 ring-2 ring-blue-500/20'
+                : 'bg-slate-900 border-slate-600 text-slate-400 hover:border-blue-400'
             }">
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 ${isSelected ? 'text-slate-950 font-bold' : 'text-blue-300'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 ${isSelected ? 'text-slate-950 font-bold' : isWithinRadius ? 'text-blue-300' : 'text-slate-400'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M8 6v6"></path>
                 <path d="M15 6v6"></path>
                 <path d="M2 12h19.6"></path>
@@ -199,7 +284,9 @@ export const TransitMap: React.FC<TransitMapProps> = ({
             <div class="mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-tight shadow-sm whitespace-nowrap ${
               isSelected
                 ? 'bg-amber-500 text-slate-950'
-                : 'bg-slate-900/90 text-slate-200 border border-slate-700/80'
+                : isWithinRadius
+                ? 'bg-slate-900/90 text-slate-200 border border-slate-700/80'
+                : 'bg-slate-950/80 text-slate-400 border border-slate-800'
             }">
               ${stop.code}
             </div>
@@ -211,7 +298,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
       const marker = L.marker([stop.lat, stop.lng], {
         icon: stopIcon,
-        zIndexOffset: isSelected ? 800 : 200,
+        zIndexOffset: isSelected ? 800 : isWithinRadius ? 300 : 100,
       });
 
       marker.on('click', () => {
@@ -220,7 +307,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
       group.addLayer(marker);
     });
-  }, [stops, selectedStop, onSelectStop]);
+  }, [stops, selectedStop, selectedLine, onSelectStop, userLocation, center, searchRadius, mapViewBounds, mapZoom]);
 
   // Update Route Polylines
   useEffect(() => {
@@ -321,30 +408,103 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     });
   }, [selectedStop]);
 
+  // Direct, robust GPS recentering with instant smooth flyTo animation
+  const handleRecenterClick = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    setIsLocating(true);
+
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setIsLocating(false);
+          const { latitude, longitude } = pos.coords;
+          map.flyTo([latitude, longitude], 16, {
+            animate: true,
+            duration: 1.0,
+          });
+          onRecenter();
+        },
+        (err) => {
+          console.warn('GPS location query failed:', err.message);
+          setIsLocating(false);
+          if (userLocation) {
+            map.flyTo([userLocation.lat, userLocation.lng], 16, {
+              animate: true,
+              duration: 0.8,
+            });
+          } else if (center) {
+            map.flyTo(center, 16, {
+              animate: true,
+              duration: 0.8,
+            });
+          } else {
+            map.flyTo([41.3879, 2.1699], 16, {
+              animate: true,
+              duration: 0.8,
+            });
+          }
+          onRecenter();
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 2000 }
+      );
+    } else if (userLocation) {
+      setIsLocating(false);
+      map.flyTo([userLocation.lat, userLocation.lng], 16, {
+        animate: true,
+        duration: 0.8,
+      });
+      onRecenter();
+    } else {
+      setIsLocating(false);
+      map.flyTo([41.3879, 2.1699], 16, {
+        animate: true,
+        duration: 0.8,
+      });
+      onRecenter();
+    }
+  };
+
   return (
     <div className="relative w-full h-full">
       {/* Map Container */}
       <div ref={mapContainerRef} className="w-full h-full z-0 outline-none" />
 
-      {/* Floating GPS Recenter FAB */}
-      <div className="absolute right-4 bottom-28 md:bottom-24 z-[400] flex flex-col gap-2">
+      {/* Floating Action Buttons */}
+      <div className="absolute right-4 bottom-28 md:bottom-24 z-[400] flex flex-col gap-2.5">
+        {/* Toggle Map Style (Street / Satellite) */}
+        <button
+          id="btn-toggle-map-style"
+          onClick={() => setMapStyle((prev) => (prev === 'streets' ? 'satellite' : 'streets'))}
+          className="flex items-center justify-center w-11 h-11 rounded-full bg-slate-800/90 hover:bg-slate-700 text-slate-200 shadow-xl shadow-black/40 active:scale-95 transition-all border border-slate-600/80 backdrop-blur-md"
+          title={mapStyle === 'streets' ? 'Cambiar a vista satélite' : 'Cambiar a mapa callejero'}
+          aria-label="Cambiar estilo de mapa"
+        >
+          <Layers className="w-5 h-5 text-slate-200" />
+        </button>
+
+        {/* Floating GPS Recenter FAB */}
         <button
           id="btn-recenter-gps"
-          onClick={onRecenter}
-          className="flex items-center justify-center w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-xl shadow-blue-600/30 active:scale-95 transition-all border border-blue-400/40"
+          onClick={handleRecenterClick}
+          disabled={isLocating}
+          className={`flex items-center justify-center w-12 h-12 rounded-full text-white shadow-xl shadow-blue-600/30 active:scale-95 transition-all border border-blue-400/40 ${
+            isLocating ? 'bg-blue-700 ring-4 ring-blue-500/40' : 'bg-blue-600 hover:bg-blue-500'
+          }`}
           title="Centrar en mi ubicación GPS"
           aria-label="Centrar en mi ubicación"
         >
-          <LocateFixed className="w-6 h-6" />
+          <LocateFixed className={`w-6 h-6 ${isLocating ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
-      {/* Real-time moving buses legend pill */}
+      {/* Network status pill */}
       <div className="absolute top-4 left-4 z-[400] pointer-events-none">
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 backdrop-blur-md border border-slate-700/70 text-xs text-slate-200 shadow-lg">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
           <span className="font-semibold text-[11px]">
-            {buses.length} autobuses en vivo con GPS
+            Red TMB Barcelona Oficial
           </span>
         </div>
       </div>

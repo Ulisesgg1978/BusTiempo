@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   BusStop,
   BusLine,
@@ -15,6 +15,7 @@ import {
 } from './types/transit';
 import {
   generateNetworkForLocation,
+  fetchTmbNetwork,
   stepSimulation,
   TransitNetwork,
   PRESET_HUBS,
@@ -51,7 +52,7 @@ import { LocationSelectorModal } from './components/LocationSelectorModal';
 import { ProximityAlertBanner } from './components/ProximityAlertBanner';
 
 // Icons
-import { ListFilter, MapPin, Compass, Navigation } from 'lucide-react';
+import { ListFilter, MapPin, Compass, Navigation, SlidersHorizontal, Check } from 'lucide-react';
 
 export default function App() {
   // Theme state
@@ -69,13 +70,43 @@ export default function App() {
 
   // Transit API Status
   const [transitStatus, setTransitStatus] = useState<TransitStatusResponse | null>(null);
+  const [isLoadingTmbNetwork, setIsLoadingTmbNetwork] = useState(false);
   const [isRefreshingArrivals, setIsRefreshingArrivals] = useState(false);
+  const [selectedStopLiveStatus, setSelectedStopLiveStatus] = useState<{
+    isLive: boolean;
+    provider: string;
+    requiresCredentials?: boolean;
+    invalidCredentials?: boolean;
+    message?: string;
+  } | null>(null);
 
-  // Load transit provider status on boot
+  // Load full official TMB Barcelona network (all lines and stops in real time)
   useEffect(() => {
+    let isCancelled = false;
+    setIsLoadingTmbNetwork(true);
+
+    fetchTmbNetwork(network.center[0], network.center[1], 'Barcelona - Red TMB Oficial')
+      .then((fullNet) => {
+        if (!isCancelled && fullNet.stops.length > 25) {
+          setNetwork((prev) => ({
+            ...fullNet,
+            center: prev.center,
+            cityName: prev.cityName && !prev.cityName.includes('Pl. Catalunya') ? prev.cityName : fullNet.cityName,
+          }));
+          cacheNetworkLocally(fullNet);
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingTmbNetwork(false);
+      });
+
     getTransitStatus().then((status) => {
-      if (status) setTransitStatus(status);
+      if (!isCancelled && status) setTransitStatus(status);
     });
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   // User Location State
@@ -90,6 +121,8 @@ export default function App() {
   const [selectedStop, setSelectedStop] = useState<BusStop | null>(null);
   const [selectedLine, setSelectedLine] = useState<BusLine | null>(null);
   const [showNearbyDrawer, setShowNearbyDrawer] = useState(false);
+  const [showRadiusPopover, setShowRadiusPopover] = useState(false);
+  const [nearbyOnlyInRadius, setNearbyOnlyInRadius] = useState(false);
 
   // Settings, Favorites & Alerts
   const [favorites, setFavorites] = useState<FavoriteItem[]>(() => getStoredFavorites());
@@ -159,12 +192,12 @@ export default function App() {
         setIsRealGpsActive(true);
         setIsGpsLoading(false);
 
-        // Procedurally populate transit stops around user's real location!
-        setNetwork((prev) => {
-          const updated = generateNetworkForLocation(latitude, longitude, 'Mi Ubicación Actual');
-          cacheNetworkLocally(updated);
-          return updated;
-        });
+        // Center on user's real GPS position preserving all official TMB lines and stops
+        setNetwork((prev) => ({
+          ...prev,
+          center: [latitude, longitude],
+          cityName: 'Mi Ubicación Actual',
+        }));
       },
       (err) => {
         console.warn('Geolocation initial query failed or denied:', err.message);
@@ -291,14 +324,21 @@ export default function App() {
   const fetchLiveArrivalsForStop = useCallback(async (stop: BusStop) => {
     setIsRefreshingArrivals(true);
     try {
-      const liveArrivals = await getRealtimeStopArrivals(stop.code);
-      if (liveArrivals && liveArrivals.length > 0) {
-        setSelectedStop((prev) => (prev && prev.id === stop.id ? { ...prev, nextArrivals: liveArrivals } : prev));
-        setNetwork((prev) => ({
-          ...prev,
-          stops: prev.stops.map((s) => (s.id === stop.id ? { ...s, nextArrivals: liveArrivals } : s)),
-        }));
-      }
+      const res = await getRealtimeStopArrivals(stop.code);
+      setSelectedStopLiveStatus({
+        isLive: res.isLive,
+        provider: res.provider,
+        requiresCredentials: res.requiresCredentials,
+        invalidCredentials: res.invalidCredentials,
+        message: res.message,
+      });
+
+      const arrivals = res.arrivals || [];
+      setSelectedStop((prev) => (prev && prev.id === stop.id ? { ...prev, nextArrivals: arrivals } : prev));
+      setNetwork((prev) => ({
+        ...prev,
+        stops: prev.stops.map((s) => (s.id === stop.id ? { ...s, nextArrivals: arrivals } : s)),
+      }));
     } catch (err) {
       console.warn('Could not refresh live arrivals:', err);
     } finally {
@@ -429,9 +469,11 @@ export default function App() {
     });
     setIsRealGpsActive(false);
 
-    const newNet = generateNetworkForLocation(coords[0], coords[1], name);
-    setNetwork(newNet);
-    cacheNetworkLocally(newNet);
+    setNetwork((prev) => ({
+      ...prev,
+      center: coords,
+      cityName: name,
+    }));
     setSelectedStop(null);
     setSelectedLine(null);
   };
@@ -448,9 +490,11 @@ export default function App() {
     });
     setIsRealGpsActive(false);
 
-    const newNet = generateNetworkForLocation(lat, lng, 'Ubicación en Mapa');
-    setNetwork(newNet);
-    cacheNetworkLocally(newNet);
+    setNetwork((prev) => ({
+      ...prev,
+      center: [lat, lng],
+      cityName: 'Ubicación en Mapa',
+    }));
   };
 
   // Recenter GPS
@@ -458,13 +502,26 @@ export default function App() {
     startGpsTracking();
   };
 
-  // Sorted stops by distance to user
-  const sortedStops = [...network.stops].map((s) => {
-    const dist = userLocation
-      ? getDistanceMeters(userLocation.lat, userLocation.lng, s.lat, s.lng)
-      : 9999;
-    return { ...s, distanceToUser: dist };
-  }).sort((a, b) => a.distanceToUser - b.distanceToUser);
+  // Reference coordinates for distance calculations: user location or map center
+  const originLat = userLocation?.lat ?? network.center[0];
+  const originLng = userLocation?.lng ?? network.center[1];
+
+  // Sorted stops by distance to user / center
+  const sortedStops = useMemo(() => {
+    return [...network.stops]
+      .map((s) => {
+        const dist = getDistanceMeters(originLat, originLng, s.lat, s.lng);
+        return { ...s, distanceToUser: dist };
+      })
+      .sort((a, b) => a.distanceToUser - b.distanceToUser);
+  }, [network.stops, originLat, originLng]);
+
+  // Stops within configured search radius
+  const stopsWithinRadius = useMemo(() => {
+    return sortedStops.filter((s) => s.distanceToUser <= settings.searchRadiusMeters);
+  }, [sortedStops, settings.searchRadiusMeters]);
+
+  const displayedNearbyStops = nearbyOnlyInRadius ? stopsWithinRadius : sortedStops;
 
   const isStopFavorite = selectedStop
     ? favorites.some((f) => f.type === 'stop' && (f.stopId === selectedStop.id || f.stopCode === selectedStop.code))
@@ -491,7 +548,11 @@ export default function App() {
         onToggleTheme={() => setIsDarkMode(!isDarkMode)}
         onOpenLocationModal={() => setIsLocationModalOpen(true)}
         onRequestGPS={startGpsTracking}
-        providerLabel={network.cityName.toLowerCase().includes('barcelona') ? 'TMB Barcelona' : 'España'}
+        providerLabel={
+          isLoadingTmbNetwork
+            ? 'Cargando TMB...'
+            : `${network.lines.length} líneas · ${network.stops.length} paradas`
+        }
       />
 
       {/* Floating Proximity Alert Banner */}
@@ -517,6 +578,7 @@ export default function App() {
           <div className="relative w-full h-full">
             {/* Fullscreen Map */}
             <TransitMap
+              center={network.center}
               userLocation={userLocation}
               stops={network.stops}
               lines={network.lines}
@@ -530,15 +592,110 @@ export default function App() {
               onManualLocationSelect={handleManualMapLocation}
             />
 
-            {/* Floating Top Filter & Quick Nearby Bar */}
+            {/* Floating Top Controls: Radius & Nearby Bar */}
             <div className="absolute top-4 right-4 z-[400] flex items-center gap-2">
+              {/* Quick Search Radius Selector Button & Popover */}
+              <div className="relative">
+                <button
+                  id="btn-toggle-radius-modal"
+                  onClick={() => {
+                    setShowRadiusPopover(!showRadiusPopover);
+                    setShowNearbyDrawer(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
+                    showRadiusPopover
+                      ? 'bg-blue-600 text-white border-blue-400'
+                      : 'bg-slate-900/90 hover:bg-slate-800 text-blue-300 border-slate-700/80'
+                  }`}
+                  title="Configurar radio de búsqueda"
+                >
+                  <Compass className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Radio: {formatDistance(settings.searchRadiusMeters)}</span>
+                </button>
+
+                {/* Floating Radius Popover */}
+                {showRadiusPopover && (
+                  <div
+                    id="radius-popover"
+                    className="absolute top-10 right-0 w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-4 shadow-2xl z-[460] space-y-3 animate-in fade-in zoom-in-95 duration-150"
+                  >
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                        <Compass className="w-4 h-4 text-blue-400" />
+                        <span>Radio de Búsqueda</span>
+                      </div>
+                      <button
+                        onClick={() => setShowRadiusPopover(false)}
+                        className="text-xs text-slate-400 hover:text-white"
+                      >
+                        ✕
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">Distancia actual:</span>
+                      <span className="font-bold text-blue-400 text-sm">
+                        {formatDistance(settings.searchRadiusMeters)}
+                      </span>
+                    </div>
+
+                    {/* Quick presets */}
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {[300, 500, 800, 1000, 1500, 2500].map((dist) => (
+                        <button
+                          key={dist}
+                          onClick={() => {
+                            handleUpdateSettings({ ...settings, searchRadiusMeters: dist });
+                          }}
+                          className={`py-1.5 px-1 text-[11px] font-semibold rounded-lg border transition-all ${
+                            settings.searchRadiusMeters === dist
+                              ? 'bg-blue-600 text-white border-blue-400 font-bold'
+                              : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:border-slate-600'
+                          }`}
+                        >
+                          {formatDistance(dist)}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Slider */}
+                    <div className="space-y-1 pt-1">
+                      <input
+                        type="range"
+                        min="100"
+                        max="5000"
+                        step="50"
+                        value={settings.searchRadiusMeters}
+                        onChange={(e) =>
+                          handleUpdateSettings({ ...settings, searchRadiusMeters: Number(e.target.value) })
+                        }
+                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>100 m</span>
+                        <span>1 km</span>
+                        <span>5 km</span>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800 text-center">
+                      <span className="text-emerald-400 font-bold">{stopsWithinRadius.length}</span> de {network.stops.length} paradas en este radio
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Nearby Stops Drawer Toggle Button */}
               <button
                 id="btn-toggle-nearby-drawer"
-                onClick={() => setShowNearbyDrawer(!showNearbyDrawer)}
+                onClick={() => {
+                  setShowNearbyDrawer(!showNearbyDrawer);
+                  setShowRadiusPopover(false);
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md border border-slate-700/80 text-xs font-bold text-white shadow-xl active:scale-95 transition-all"
               >
                 <ListFilter className="w-3.5 h-3.5 text-blue-400" />
-                <span>Paradas cercanas ({sortedStops.length})</span>
+                <span>Paradas ({stopsWithinRadius.length})</span>
               </button>
             </div>
 
@@ -551,7 +708,7 @@ export default function App() {
                 <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                   <div className="flex items-center gap-2">
                     <Navigation className="w-4 h-4 text-blue-400" />
-                    <span className="font-bold text-xs text-white">Ordenadas por distancia</span>
+                    <span className="font-bold text-xs text-white">Paradas Cercanas</span>
                   </div>
                   <button
                     onClick={() => setShowNearbyDrawer(false)}
@@ -561,38 +718,76 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="overflow-y-auto space-y-2 mt-2 pr-1">
-                  {sortedStops.map((stop) => (
-                    <div
-                      key={stop.id}
-                      onClick={() => {
-                        handleSelectStop(stop);
-                      }}
-                      className="p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 cursor-pointer transition-colors flex items-center justify-between gap-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-white truncate">
-                          {stop.name}
-                        </div>
-                        <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
-                          <span className="text-amber-400 font-semibold">#{stop.code}</span>
-                          <span>•</span>
-                          <span>Líneas: {stop.lines.join(', ')}</span>
-                        </div>
-                      </div>
+                {/* Filter toggle by search radius */}
+                <div className="flex items-center justify-between py-2 border-b border-slate-800 text-xs">
+                  <span className="text-slate-400 text-[11px]">
+                    Radio: <strong className="text-blue-300">{formatDistance(settings.searchRadiusMeters)}</strong>
+                  </span>
+                  <button
+                    onClick={() => setNearbyOnlyInRadius(!nearbyOnlyInRadius)}
+                    className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-all ${
+                      nearbyOnlyInRadius
+                        ? 'bg-blue-600/30 text-blue-300 border-blue-500/50'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}
+                  >
+                    {nearbyOnlyInRadius ? `Solo en radio (${stopsWithinRadius.length})` : `Mostrar todas (${sortedStops.length})`}
+                  </button>
+                </div>
 
-                      <div className="text-right shrink-0">
-                        <span className="text-xs font-bold text-blue-400">
-                          {formatDistance(stop.distanceToUser)}
-                        </span>
-                        {stop.nextArrivals[0] && (
-                          <div className="text-[10px] text-emerald-400 font-semibold">
-                            {Math.ceil(stop.nextArrivals[0].etaSeconds / 60)} min
-                          </div>
-                        )}
+                <div className="overflow-y-auto space-y-2 mt-2 pr-1">
+                  {displayedNearbyStops.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-slate-400">
+                      No hay paradas dentro de {formatDistance(settings.searchRadiusMeters)}.
+                      <div className="mt-2">
+                        <button
+                          onClick={() => handleUpdateSettings({ ...settings, searchRadiusMeters: 2500 })}
+                          className="px-3 py-1 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30 font-semibold"
+                        >
+                          Ampliar radio a 2.5 km
+                        </button>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    displayedNearbyStops.map((stop) => {
+                      const isInside = stop.distanceToUser <= settings.searchRadiusMeters;
+                      return (
+                        <div
+                          key={stop.id}
+                          onClick={() => {
+                            handleSelectStop(stop);
+                          }}
+                          className={`p-2.5 rounded-xl border cursor-pointer transition-colors flex items-center justify-between gap-2 ${
+                            isInside
+                              ? 'bg-slate-800/80 hover:bg-slate-700/80 border-slate-700/60'
+                              : 'bg-slate-900/60 hover:bg-slate-800/60 border-slate-800/60 opacity-60'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate">
+                              {stop.name}
+                            </div>
+                            <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
+                              <span className="text-amber-400 font-semibold">#{stop.code}</span>
+                              <span>•</span>
+                              <span>Líneas: {stop.lines.join(', ')}</span>
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-xs font-bold text-blue-400">
+                              {formatDistance(stop.distanceToUser)}
+                            </span>
+                            {stop.nextArrivals[0] && (
+                              <div className="text-[10px] text-emerald-400 font-semibold">
+                                {Math.ceil(stop.nextArrivals[0].etaSeconds / 60)} min
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             )}
@@ -612,6 +807,7 @@ export default function App() {
                 isOffline={isOffline}
                 onRefreshLive={() => selectedStop && fetchLiveArrivalsForStop(selectedStop)}
                 isRefreshing={isRefreshingArrivals}
+                liveStatus={selectedStopLiveStatus}
               />
             )}
           </div>

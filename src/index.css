@@ -45,6 +45,15 @@
   scrollbar-width: none;
 }
 
+/* Dark mode tiles styling for OpenStreetMap / Leaflet (eliminates need for proprietary API keys) */
+.leaflet-tile-dark {
+  filter: brightness(0.65) invert(1) contrast(3) hue-rotate(200deg) saturate(0.28) brightness(0.75);
+}
+
+.leaflet-tile-light {
+  filter: none;
+}
+
 /* Android safe area insets */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);

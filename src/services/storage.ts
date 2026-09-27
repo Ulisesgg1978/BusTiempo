@@ -90,7 +90,13 @@ export function cacheNetworkLocally(network: TransitNetwork): void {
 export function getCachedNetwork(): TransitNetwork | null {
   try {
     const raw = localStorage.getItem(CACHED_NETWORK_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Ignore legacy small mock cache of 18 stops so real TMB full network loads
+    if (!parsed || !Array.isArray(parsed.stops) || parsed.stops.length <= 25) {
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }

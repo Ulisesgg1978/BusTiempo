@@ -395,7 +395,7 @@ export const BARCELONA_STOPS: BusStop[] = [
 ];
 
 /**
- * Generates the authentic Barcelona transit network with real lines, real TMB stops and moving buses
+ * Generates the authentic Barcelona transit network with real lines and real TMB stops
  */
 export function getBarcelonaTransitNetwork(): {
   cityName: string;
@@ -404,46 +404,11 @@ export function getBarcelonaTransitNetwork(): {
   lines: BusLine[];
   buses: LiveBus[];
 } {
-  const lines = BARCELONA_LINES;
-  const stops = BARCELONA_STOPS;
-
-  // Generate 16 real-time buses moving on Barcelona routes
-  const buses: LiveBus[] = [];
-  const occupancies: ('low' | 'medium' | 'high')[] = ['low', 'medium', 'medium', 'high'];
-
-  lines.forEach((line, lIdx) => {
-    // 2 buses per line
-    for (let b = 0; b < 2; b++) {
-      const pathNodes = line.path;
-      const nodeIdx = (b * 3 + lIdx) % Math.max(1, pathNodes.length);
-      const basePos = pathNodes[nodeIdx] || [41.3879, 2.1699];
-      const nextPos = pathNodes[(nodeIdx + 1) % pathNodes.length] || basePos;
-
-      const stopList = line.stops;
-      const targetStopId = stopList[(b + lIdx) % stopList.length] || stops[0].id;
-      const targetStop = stops.find((s) => s.id === targetStopId) || stops[0];
-
-      buses.push({
-        id: `bcn-bus-${line.code}-${b + 1}`,
-        lineCode: line.code,
-        plate: `BCN-${2000 + lIdx * 100 + b * 23}`,
-        lat: basePos[0] + (Math.random() - 0.5) * 0.0004,
-        lng: basePos[1] + (Math.random() - 0.5) * 0.0004,
-        heading: Math.floor(Math.random() * 360),
-        speedKmh: Math.floor(22 + Math.random() * 18),
-        nextStopId: targetStop.id,
-        distanceToNextStopMeters: 380,
-        occupancy: occupancies[(lIdx + b) % occupancies.length],
-        isAccessible: true,
-      });
-    }
-  });
-
   return {
     cityName: 'Barcelona (TMB iBus)',
     center: [41.3879, 2.1699], // Plaça de Catalunya
-    stops,
-    lines,
-    buses,
+    stops: BARCELONA_STOPS,
+    lines: BARCELONA_LINES,
+    buses: [], // Real data only: no fake moving buses unless provided by live API
   };
 }

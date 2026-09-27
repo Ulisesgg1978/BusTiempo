@@ -1,7 +1,7 @@
 import React from 'react';
 import { BusStop, BusLine, Arrival, ActiveAlert } from '../types/transit';
 import { formatDistance, formatETA } from '../utils/geo';
-import { Star, Bell, BellOff, X, Accessibility, Umbrella, Compass, MapPin, RotateCw, Radio } from 'lucide-react';
+import { Star, Bell, BellOff, X, Accessibility, Umbrella, Compass, MapPin, RotateCw, Radio, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 interface StopDetailsSheetProps {
   stop: BusStop;
@@ -16,6 +16,13 @@ interface StopDetailsSheetProps {
   isOffline: boolean;
   onRefreshLive?: () => void;
   isRefreshing?: boolean;
+  liveStatus?: {
+    isLive: boolean;
+    provider: string;
+    requiresCredentials?: boolean;
+    invalidCredentials?: boolean;
+    message?: string;
+  } | null;
 }
 
 export const StopDetailsSheet: React.FC<StopDetailsSheetProps> = ({
@@ -31,6 +38,7 @@ export const StopDetailsSheet: React.FC<StopDetailsSheetProps> = ({
   isOffline,
   onRefreshLive,
   isRefreshing = false,
+  liveStatus,
 }) => {
   return (
     <div
@@ -169,8 +177,100 @@ export const StopDetailsSheet: React.FC<StopDetailsSheetProps> = ({
         </div>
 
         {stop.nextArrivals.length === 0 ? (
-          <div className="py-8 text-center text-slate-400 text-sm">
-            No hay autobuses próximos programados en este momento.
+          <div className="py-2 space-y-3">
+            {/* Real lines passing by this stop */}
+            <div className="space-y-2">
+              <div className="text-xs font-semibold text-slate-300">
+                Líneas oficiales en esta parada:
+              </div>
+              <div className="space-y-2">
+                {stop.lines.map((lineCode) => {
+                  const lineInfo = lines.find((l) => l.code === lineCode);
+                  return (
+                    <div
+                      key={lineCode}
+                      className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-10 h-10 rounded-xl flex items-center justify-center font-extrabold text-white text-sm shadow-sm"
+                          style={{ backgroundColor: lineInfo?.color || '#2563eb' }}
+                        >
+                          {lineCode}
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-white">
+                            {lineInfo?.name || `Línea ${lineCode}`}
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            Destino: {lineInfo?.destination || 'Recorrido oficial'} • Paso cada ~{lineInfo?.frequencyMinutes || 7} min
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => lineInfo && onSelectLine(lineInfo)}
+                        className="px-2.5 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-medium text-slate-200 transition-colors"
+                      >
+                        Ver ruta
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Status notice for TMB iBus */}
+            {liveStatus?.invalidCredentials ? (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-1.5">
+                <div className="flex items-center gap-2 text-amber-400 font-bold">
+                  <AlertTriangle className="w-4 h-4 text-amber-400" />
+                  <span>Credenciales TMB no válidas</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Las claves configuradas en <code className="px-1 py-0.5 rounded bg-slate-800 text-amber-300">.env</code> no fueron autorizadas por la API de TMB (HTTP 401/403). Verifica tu <code className="text-amber-300">TMB_APP_ID</code> y <code className="text-amber-300">TMB_APP_KEY</code> en el portal oficial <a href="https://developer.tmb.cat/" target="_blank" rel="noopener noreferrer" className="underline text-amber-300">developer.tmb.cat</a>.
+                </p>
+              </div>
+            ) : liveStatus?.isLive ? (
+              <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>Conexión TMB iBus activa</span>
+                </div>
+                <p className="text-[11px] text-slate-300">
+                  {liveStatus.message || 'No hay autobuses en aproximación inmediata en los próximos 30 minutos según el servicio en vivo de TMB.'}
+                </p>
+              </div>
+            ) : (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-br from-blue-950/40 to-slate-900 border border-blue-800/40 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-blue-300 font-bold">
+                  <Radio className="w-4 h-4 text-blue-400" />
+                  <span>Tiempo Real TMB iBus (Barcelona)</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Para consultar las predicciones de llegada en vivo por GPS de los autobuses de TMB en esta parada, configura tus credenciales gratuitas en el archivo <code className="px-1 py-0.5 rounded bg-slate-800 text-blue-300">.env</code> (<code className="text-blue-300">TMB_APP_ID</code> y <code className="text-blue-300">TMB_APP_KEY</code>). ¡Solo se necesitan credenciales de TMB, no se requiere Madrid!
+                </p>
+                <div className="flex items-center justify-between pt-1">
+                  <a
+                    href="https://developer.tmb.cat/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-blue-400 hover:text-blue-300 font-semibold underline inline-flex items-center gap-1"
+                  >
+                    developer.tmb.cat ↗
+                  </a>
+                  {onRefreshLive && (
+                    <button
+                      onClick={onRefreshLive}
+                      disabled={isRefreshing}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600/30 hover:bg-blue-600/40 text-blue-300 text-xs font-semibold border border-blue-500/40 transition-all disabled:opacity-50"
+                    >
+                      <RotateCw className={`w-3 h-3 ${isRefreshing ? 'animate-spin' : ''}`} />
+                      <span>Reintentar en vivo</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           stop.nextArrivals.map((arrival) => {

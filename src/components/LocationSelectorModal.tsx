@@ -84,11 +84,11 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
           </div>
 
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-2 px-1">
-            Puntos clave en Barcelona:
+            Zonas y corredores clave de Barcelona:
           </div>
 
           <div className="space-y-1.5">
-            {PRESET_HUBS.filter((p) => p.region === 'Barcelona').map((preset) => {
+            {PRESET_HUBS.map((preset) => {
               const isSelected = currentCityName === preset.name;
               return (
                 <button
@@ -108,36 +108,6 @@ export const LocationSelectorModal: React.FC<LocationSelectorModalProps> = ({
                     <span className="text-xs font-medium">{preset.name}</span>
                   </div>
                   {isSelected && <Check className="w-3.5 h-3.5 text-blue-400" />}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-3 px-1">
-            Otras ciudades de España:
-          </div>
-
-          <div className="space-y-1.5">
-            {PRESET_HUBS.filter((p) => p.region !== 'Barcelona').map((preset) => {
-              const isSelected = currentCityName === preset.name;
-              return (
-                <button
-                  key={preset.name}
-                  onClick={() => {
-                    onSelectPreset(preset.name, preset.center);
-                    onClose();
-                  }}
-                  className={`w-full p-2.5 rounded-xl border text-left flex items-center justify-between transition-all ${
-                    isSelected
-                      ? 'bg-amber-500/20 border-amber-500/50 text-white'
-                      : 'bg-slate-800/60 border-slate-700/60 hover:border-slate-600 text-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span className="text-xs font-medium">{preset.name}</span>
-                  </div>
-                  {isSelected && <Check className="w-3.5 h-3.5 text-amber-400" />}
                 </button>
               );
             })}

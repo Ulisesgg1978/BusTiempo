@@ -6,7 +6,7 @@ import {
   requestNotificationPermission,
   sendProximityNotification,
 } from '../services/notificationService';
-import { Bell, Trash2, Volume2, Vibrate, CheckCircle2, AlertTriangle, Play, Sliders } from 'lucide-react';
+import { Bell, Trash2, Volume2, Vibrate, CheckCircle2, AlertTriangle, Play, Sliders, Compass } from 'lucide-react';
 import { formatDistance } from '../utils/geo';
 
 interface AlertsViewProps {
@@ -22,6 +22,7 @@ interface AlertsViewProps {
 export const AlertsView: React.FC<AlertsViewProps> = ({
   alerts,
   stops,
+  lines,
   settings,
   onUpdateSettings,
   onRemoveAlert,
@@ -197,30 +198,96 @@ export const AlertsView: React.FC<AlertsViewProps> = ({
         </div>
       </div>
 
+      {/* Stop Search Radius Configuration Card */}
+      <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700/70 shadow-md space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Compass className="w-4 h-4 text-blue-400" />
+            <h3 className="text-sm font-bold text-white">Radio de Búsqueda de Paradas</h3>
+          </div>
+          <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+            {formatDistance(settings.searchRadiusMeters)}
+          </span>
+        </div>
+
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Define el alcance en metros alrededor de tu ubicación para filtrar paradas cercanas, mostrarlas en el mapa con mayor contraste y calcular llegadas.
+        </p>
+
+        {/* Quick preset buttons */}
+        <div className="space-y-1.5">
+          <div className="text-[11px] text-slate-400 font-medium">Accesos directos de distancia:</div>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            {[300, 500, 800, 1000, 1500, 2500].map((radius) => (
+              <button
+                key={radius}
+                onClick={() =>
+                  onUpdateSettings({ ...settings, searchRadiusMeters: radius })
+                }
+                className={`py-2 px-1 text-xs font-semibold rounded-xl border transition-all ${
+                  settings.searchRadiusMeters === radius
+                    ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-md shadow-blue-500/30'
+                    : 'bg-slate-900/60 text-slate-300 border-slate-700 hover:border-slate-500'
+                }`}
+              >
+                {formatDistance(radius)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Continuous Range Slider */}
+        <div className="pt-2 space-y-1.5 border-t border-slate-700/60">
+          <div className="flex justify-between items-center text-xs text-slate-300">
+            <span>Ajuste con barra deslizante:</span>
+            <span className="font-bold text-blue-400">{formatDistance(settings.searchRadiusMeters)}</span>
+          </div>
+          <input
+            type="range"
+            min="100"
+            max="5000"
+            step="50"
+            value={settings.searchRadiusMeters}
+            onChange={(e) =>
+              onUpdateSettings({ ...settings, searchRadiusMeters: Number(e.target.value) })
+            }
+            className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+          />
+          <div className="flex justify-between text-[10px] text-slate-500 font-medium">
+            <span>100 m</span>
+            <span>1 km</span>
+            <span>2.5 km</span>
+            <span>5 km</span>
+          </div>
+        </div>
+      </div>
+
       {/* Realtime Transit Provider Info Card */}
       <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-950/40 to-slate-900 border border-blue-800/40 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <h3 className="text-sm font-bold text-white">Datos en Tiempo Real (Barcelona / España)</h3>
+            <h3 className="text-sm font-bold text-white">Datos en Tiempo Real (Barcelona - TMB iBus)</h3>
           </div>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
-            TMB iBus
+          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+            TMB Oficial
           </span>
         </div>
 
         <p className="text-xs text-slate-300 leading-relaxed">
-          La app está configurada con las paradas y líneas oficiales de <strong>TMB (Transports Metropolitans de Barcelona)</strong> y principales corredores de España.
+          La app está conectada en tiempo real a la API oficial de <strong>TMB (Transports Metropolitans de Barcelona)</strong> con toda la red de transporte en directo. No requiere claves de Madrid.
         </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
           <div className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800">
-            <div className="text-slate-400 text-[11px]">Proveedor Principal</div>
-            <div className="font-semibold text-white mt-0.5">TMB iBus API (Barcelona)</div>
+            <div className="text-slate-400 text-[11px]">Proveedor Oficial</div>
+            <div className="font-semibold text-white mt-0.5">TMB iBus (Barcelona)</div>
           </div>
           <div className="p-2.5 rounded-xl bg-slate-900/70 border border-slate-800">
-            <div className="text-slate-400 text-[11px]">Líneas Activas</div>
-            <div className="font-semibold text-white mt-0.5">H12, V15, D20, 24, 7, N2...</div>
+            <div className="text-slate-400 text-[11px]">Red Conectada en Vivo</div>
+            <div className="font-semibold text-emerald-400 mt-0.5">
+              {lines.length} líneas · {stops.length} paradas
+            </div>
           </div>
         </div>
 

@@ -1,0 +1,17 @@
+{
+  "name": "BusTiempo - Paradas y Tiempos en Tiempo Real",
+  "short_name": "BusTiempo",
+  "description": "Encuentra paradas cercanas, consulta tiempos en tiempo real y alertas de aproximación.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/bus-icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

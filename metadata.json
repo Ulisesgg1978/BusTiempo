@@ -1,0 +1,6 @@
+{
+  "name": "BusTiempo - Paradas y Tiempos en Tiempo Real",
+  "description": "Aplicación de transporte público para España centrada en Barcelona (TMB iBus) y principales ciudades, con tiempos de llegada en tiempo real, alertas GPS de aproximación, paradas y líneas oficiales.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

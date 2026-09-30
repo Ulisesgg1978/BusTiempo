@@ -5,8 +5,9 @@ import {
   hasNotificationPermission,
   requestNotificationPermission,
   sendProximityNotification,
+  triggerBackgroundTestNotification,
 } from '../services/notificationService';
-import { Bell, Trash2, Volume2, Vibrate, CheckCircle2, AlertTriangle, Play, Sliders, Compass } from 'lucide-react';
+import { Bell, Trash2, Volume2, Vibrate, CheckCircle2, AlertTriangle, Play, Sliders, Compass, Bus, Radio } from 'lucide-react';
 import { formatDistance } from '../utils/geo';
 
 interface AlertsViewProps {
@@ -34,6 +35,7 @@ export const AlertsView: React.FC<AlertsViewProps> = ({
       : 'unsupported'
   );
   const [testSent, setTestSent] = useState(false);
+  const [bgTestSent, setBgTestSent] = useState(false);
 
   const handleRequestPermission = async () => {
     const res = await requestNotificationPermission();
@@ -49,6 +51,12 @@ export const AlertsView: React.FC<AlertsViewProps> = ({
     });
     setTestSent(true);
     setTimeout(() => setTestSent(false), 3000);
+  };
+
+  const handleTestBackgroundPush = async () => {
+    setBgTestSent(true);
+    await triggerBackgroundTestNotification(5);
+    setTimeout(() => setBgTestSent(false), 6000);
   };
 
   return (
@@ -106,17 +114,39 @@ export const AlertsView: React.FC<AlertsViewProps> = ({
           )}
         </div>
 
-        {/* Test Notification Button */}
-        <div className="mt-3 pt-3 border-t border-slate-700/60 flex items-center justify-between">
-          <span className="text-xs text-slate-400">Prueba cómo sonará la alerta:</span>
-          <button
-            id="btn-test-notification"
-            onClick={handleTestNotification}
-            className="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-          >
-            <Play className="w-3.5 h-3.5 text-amber-400" />
-            {testSent ? '¡Alerta enviada!' : 'Probar sonido y aviso'}
-          </button>
+        {/* Test Notification Buttons */}
+        <div className="mt-3 pt-3 border-t border-slate-700/60 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-400">Prueba en pantalla actual:</span>
+            <button
+              id="btn-test-notification"
+              onClick={handleTestNotification}
+              className="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
+            >
+              <Play className="w-3.5 h-3.5 text-amber-400" />
+              {testSent ? '¡Alerta enviada!' : 'Probar sonido'}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <div className="text-xs text-slate-400">
+              <span>Alerta en segundo plano (Service Worker):</span>
+              <div className="text-[10px] text-slate-500">Programa aviso en 5s (puedes minimizar la app)</div>
+            </div>
+            <button
+              id="btn-test-bg-push-notification"
+              onClick={handleTestBackgroundPush}
+              disabled={bgTestSent}
+              className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all shadow ${
+                bgTestSent
+                  ? 'bg-emerald-600 text-white font-bold animate-pulse'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5" />
+              {bgTestSent ? '¡Llega en 5s! Sal de la app' : 'Probar en 2º plano (5s)'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -258,6 +288,114 @@ export const AlertsView: React.FC<AlertsViewProps> = ({
             <span>1 km</span>
             <span>2.5 km</span>
             <span>5 km</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Bus Display Filter Card */}
+      <div className="p-4 rounded-2xl bg-slate-800/80 border border-slate-700/70 shadow-md space-y-3">
+        <div className="flex items-center gap-2">
+          <Bus className="w-5 h-5 text-amber-400" />
+          <div>
+            <h3 className="text-sm font-bold text-white">Visualización de Autobuses en el Mapa</h3>
+            <p className="text-xs text-slate-400">
+              Controla qué unidades en circulación se muestran activas en el mapa
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {/* Option 1: In Radius (Default) */}
+          <div
+            id="opt-bus-filter-radius"
+            onClick={() => onUpdateSettings({ ...settings, busFilterMode: 'in_radius' })}
+            className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
+              settings.busFilterMode === 'in_radius'
+                ? 'bg-blue-600/20 border-blue-500/70 text-white'
+                : 'bg-slate-900/60 border-slate-700/70 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+              settings.busFilterMode === 'in_radius'
+                ? 'border-blue-400 bg-blue-500'
+                : 'border-slate-500'
+            }`}>
+              {settings.busFilterMode === 'in_radius' && (
+                <div className="w-1.5 h-1.5 rounded-full bg-white" />
+              )}
+            </div>
+            <div>
+              <div className="text-xs font-bold flex items-center gap-1.5">
+                <span>Solo autobuses que pasan por paradas en mi radio</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400 font-semibold">
+                  Por defecto
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Muestra únicamente las unidades de las líneas que tienen parada dentro del radio de acción configurado ({formatDistance(settings.searchRadiusMeters)}).
+              </p>
+            </div>
+          </div>
+
+          {/* Option 2: Matches Only */}
+          <div
+            id="opt-bus-filter-matches"
+            onClick={() => onUpdateSettings({ ...settings, busFilterMode: 'matches_only' })}
+            className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
+              settings.busFilterMode === 'matches_only'
+                ? 'bg-amber-600/20 border-amber-500/70 text-white ring-1 ring-amber-500/30'
+                : 'bg-slate-900/60 border-slate-700/70 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+              settings.busFilterMode === 'matches_only'
+                ? 'border-amber-400 bg-amber-500'
+                : 'border-slate-500'
+            }`}>
+              {settings.busFilterMode === 'matches_only' && (
+                <div className="w-1.5 h-1.5 rounded-full bg-slate-950" />
+              )}
+            </div>
+            <div>
+              <div className="text-xs font-bold flex items-center gap-1.5">
+                <span>Solo autobuses con Match (Origen ⇄ Destino)</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-semibold">
+                  ✨ Match
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Muestra exclusivamente los vehículos de las líneas que pasan simultáneamente por tu radio de origen y por el punto de destino colocado en el mapa.
+              </p>
+            </div>
+          </div>
+
+          {/* Option 3: All Buses */}
+          <div
+            id="opt-bus-filter-all"
+            onClick={() => onUpdateSettings({ ...settings, busFilterMode: 'all' })}
+            className={`p-3 rounded-xl border cursor-pointer transition-all flex items-start gap-3 ${
+              settings.busFilterMode === 'all'
+                ? 'bg-blue-600/20 border-blue-500/70 text-white'
+                : 'bg-slate-900/60 border-slate-700/70 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center shrink-0 ${
+              settings.busFilterMode === 'all'
+                ? 'border-blue-400 bg-blue-500'
+                : 'border-slate-500'
+            }`}>
+              {settings.busFilterMode === 'all' && (
+                <div className="w-1.5 h-1.5 rounded-full bg-white" />
+              )}
+            </div>
+            <div>
+              <div className="text-xs font-bold">
+                Todos los autobuses de la red
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Muestra en el mapa las unidades en servicio de todas las {lines.length} líneas oficiales de Barcelona.
+              </p>
+            </div>
           </div>
         </div>
       </div>

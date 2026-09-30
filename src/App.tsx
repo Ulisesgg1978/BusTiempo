@@ -12,6 +12,12 @@ import {
   FavoriteItem,
   ActiveAlert,
   UserPosition,
+  TargetPoint,
+  RecentDestination,
+  DestinationFavorite,
+  MatchStopRole,
+  MatchedLineETA,
+  TransitTransferSuggestion,
 } from './types/transit';
 import {
   generateNetworkForLocation,
@@ -36,9 +42,25 @@ import {
   getStoredTheme,
   saveStoredTheme,
   UserSettings,
+  getStoredRecentDestinations,
+  saveRecentDestination,
+  getStoredDestinationFavorites,
+  saveDestinationFavorite,
+  removeDestinationFavorite,
+  loadCachedNetworkFromIDB,
 } from './services/storage';
-import { sendProximityNotification } from './services/notificationService';
+import {
+  sendProximityNotification,
+  triggerBackgroundTestNotification,
+  requestNotificationPermission,
+} from './services/notificationService';
 import { getDistanceMeters, formatDistance } from './utils/geo';
+import {
+  computeStopMatchRoles,
+  computeMatchedLineETAs,
+  computeTransferSuggestions,
+  filterClosestStopsForMatchedLines,
+} from './services/transitMatching';
 
 // Components
 import { TransitMap } from './components/TransitMap';
@@ -50,9 +72,30 @@ import { Navbar } from './components/Navbar';
 import { BottomNavigation, TabType } from './components/BottomNavigation';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
 import { ProximityAlertBanner } from './components/ProximityAlertBanner';
+import { DestinationMenu } from './components/DestinationMenu';
 
 // Icons
-import { ListFilter, MapPin, Compass, Navigation, SlidersHorizontal, Check } from 'lucide-react';
+import {
+  ListFilter,
+  MapPin,
+  Compass,
+  Navigation,
+  SlidersHorizontal,
+  Check,
+  Bus,
+  Crosshair,
+  Sparkles,
+  X,
+  Target,
+  ArrowRight,
+  Route,
+  Clock,
+  Shuffle,
+  Star,
+  ChevronDown,
+  WifiOff,
+  Bell,
+} from 'lucide-react';
 
 export default function App() {
   // Theme state
@@ -123,6 +166,47 @@ export default function App() {
   const [showNearbyDrawer, setShowNearbyDrawer] = useState(false);
   const [showRadiusPopover, setShowRadiusPopover] = useState(false);
   const [nearbyOnlyInRadius, setNearbyOnlyInRadius] = useState(false);
+
+  // Target Destination Point State (Second zone with matching radius & line matching)
+  const [destinationPoint, setDestinationPoint] = useState<TargetPoint | null>(() => {
+    try {
+      const stored = localStorage.getItem('bustiempo_destination_point');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isSettingDestination, setIsSettingDestination] = useState<boolean>(false);
+  const [isDestinationMenuOpen, setIsDestinationMenuOpen] = useState<boolean>(false);
+  const [isMatchCardCollapsed, setIsMatchCardCollapsed] = useState<boolean>(false);
+  const [recentDestinations, setRecentDestinations] = useState<RecentDestination[]>(() =>
+    getStoredRecentDestinations()
+  );
+  const [favoriteDestinations, setFavoriteDestinations] = useState<DestinationFavorite[]>(() =>
+    getStoredDestinationFavorites()
+  );
+  const [selectedTransfer, setSelectedTransfer] = useState<TransitTransferSuggestion | null>(null);
+
+  // Check if active destination is already saved in favorites
+  const isDestinationInFavorites = useMemo(() => {
+    if (!destinationPoint) return false;
+    return favoriteDestinations.some(
+      (f) => Math.hypot(f.lat - destinationPoint.lat, f.lng - destinationPoint.lng) < 0.0004
+    );
+  }, [destinationPoint, favoriteDestinations]);
+
+  // Save destination point to local storage
+  useEffect(() => {
+    try {
+      if (destinationPoint) {
+        localStorage.setItem('bustiempo_destination_point', JSON.stringify(destinationPoint));
+      } else {
+        localStorage.removeItem('bustiempo_destination_point');
+      }
+    } catch {
+      // ignore
+    }
+  }, [destinationPoint]);
 
   // Settings, Favorites & Alerts
   const [favorites, setFavorites] = useState<FavoriteItem[]>(() => getStoredFavorites());
@@ -353,6 +437,11 @@ export default function App() {
     fetchLiveArrivalsForStop(stop);
   }, [fetchLiveArrivalsForStop]);
 
+  const handleSelectLine = useCallback((line: BusLine) => {
+    setSelectedLine(line);
+    setSelectedStop(null);
+  }, []);
+
   // Keep selected stop updated with latest real-time arrivals
   useEffect(() => {
     if (selectedStop) {
@@ -502,11 +591,49 @@ export default function App() {
     startGpsTracking();
   };
 
+  // Set destination point from map click or menu selection
+  const handleSetDestinationPoint = (lat: number, lng: number, name = 'Zona Destino') => {
+    const point = {
+      lat,
+      lng,
+      name,
+    };
+    setDestinationPoint(point);
+    setIsSettingDestination(false);
+    setSelectedStop(null); // Prevent overlapping stop details sheet
+    setShowNearbyDrawer(false); // Close drawer to avoid clutter
+    setShowRadiusPopover(false); // Close radius popover
+    setSelectedTransfer(null);
+    setIsMatchCardCollapsed(false);
+    const updatedRecents = saveRecentDestination(point);
+    setRecentDestinations(updatedRecents);
+  };
+
+  const handleAddDestinationFavorite = (fav: DestinationFavorite) => {
+    const updated = saveDestinationFavorite(fav);
+    setFavoriteDestinations(updated);
+  };
+
+  const handleRemoveDestinationFavorite = (favId: string) => {
+    const updated = removeDestinationFavorite(favId);
+    setFavoriteDestinations(updated);
+  };
+
+  // Clear destination point
+  const handleClearDestinationPoint = () => {
+    setDestinationPoint(null);
+    setIsSettingDestination(false);
+    setSelectedTransfer(null);
+    if (settings.busFilterMode === 'matches_only') {
+      handleUpdateSettings({ ...settings, busFilterMode: 'in_radius' });
+    }
+  };
+
   // Reference coordinates for distance calculations: user location or map center
   const originLat = userLocation?.lat ?? network.center[0];
   const originLng = userLocation?.lng ?? network.center[1];
 
-  // Sorted stops by distance to user / center
+  // Sorted stops by distance to user / center (Origin zone)
   const sortedStops = useMemo(() => {
     return [...network.stops]
       .map((s) => {
@@ -516,10 +643,204 @@ export default function App() {
       .sort((a, b) => a.distanceToUser - b.distanceToUser);
   }, [network.stops, originLat, originLng]);
 
-  // Stops within configured search radius
+  // Stops within configured search radius (Origin zone)
   const stopsWithinRadius = useMemo(() => {
     return sortedStops.filter((s) => s.distanceToUser <= settings.searchRadiusMeters);
   }, [sortedStops, settings.searchRadiusMeters]);
+
+  // Stops within configured destination radius (Destination zone with IDENTICAL radius)
+  const stopsWithinDestRadius = useMemo(() => {
+    if (!destinationPoint) return [];
+    return network.stops.filter((s) => {
+      const dist = getDistanceMeters(destinationPoint.lat, destinationPoint.lng, s.lat, s.lng);
+      return dist <= settings.searchRadiusMeters;
+    });
+  }, [network.stops, destinationPoint, settings.searchRadiusMeters]);
+
+  // Distance between Origin and Destination points
+  const distanceOriginToDest = useMemo(() => {
+    if (!destinationPoint) return null;
+    return getDistanceMeters(originLat, originLng, destinationPoint.lat, destinationPoint.lng);
+  }, [destinationPoint, originLat, originLng]);
+
+  // Lines that pass through stops inside the Origin radius
+  const linesServingRadius = useMemo(() => {
+    const lineCodes = new Set<string>();
+    stopsWithinRadius.forEach((s) => {
+      s.lines.forEach((l) => lineCodes.add(l.toUpperCase()));
+    });
+    network.lines.forEach((l) => {
+      if (
+        l.stops &&
+        l.stops.some((sId) => stopsWithinRadius.some((s) => s.id === sId || s.code === sId))
+      ) {
+        lineCodes.add(l.code.toUpperCase());
+      }
+    });
+    return lineCodes;
+  }, [stopsWithinRadius, network.lines]);
+
+  // Lines that pass through stops inside the Destination radius
+  const linesServingDest = useMemo(() => {
+    if (!destinationPoint) return new Set<string>();
+    const lineCodes = new Set<string>();
+    stopsWithinDestRadius.forEach((s) => {
+      s.lines.forEach((l) => lineCodes.add(l.toUpperCase()));
+    });
+    network.lines.forEach((l) => {
+      if (
+        l.stops &&
+        l.stops.some((sId) => stopsWithinDestRadius.some((s) => s.id === sId || s.code === sId))
+      ) {
+        lineCodes.add(l.code.toUpperCase());
+      }
+    });
+    return lineCodes;
+  }, [stopsWithinDestRadius, network.lines, destinationPoint]);
+
+  // Matched Line Codes: lines that pass through BOTH Origin radius AND Destination radius!
+  const matchedLineCodes = useMemo(() => {
+    if (!destinationPoint) return new Set<string>();
+    const matches = new Set<string>();
+    for (const code of linesServingRadius) {
+      if (linesServingDest.has(code)) {
+        matches.add(code);
+      }
+    }
+    return matches;
+  }, [destinationPoint, linesServingRadius, linesServingDest]);
+
+  // Full BusLine objects for matched lines
+  const matchedLines = useMemo(() => {
+    return network.lines.filter((l) => matchedLineCodes.has(l.code.toUpperCase()));
+  }, [network.lines, matchedLineCodes]);
+
+  // Directional stop roles (IDA in Emerald, VUELTA in Rose, DUAL in Amber)
+  const stopMatchRoles = useMemo(() => {
+    return computeStopMatchRoles(stopsWithinRadius, stopsWithinDestRadius, matchedLines, network.stops);
+  }, [stopsWithinRadius, stopsWithinDestRadius, matchedLines, network.stops]);
+
+  // Dynamic estimated arrival times (ETAs) at the matched stops
+  // Requirement 4: Calculate door-to-door arrival time (walk to origin stop + wait time + transit time + walk from dest stop to destination)
+  // and sort matched lines by fastest total arrival time
+  const matchedLineETAs = useMemo(() => {
+    return computeMatchedLineETAs(
+      matchedLines,
+      stopsWithinRadius,
+      stopsWithinDestRadius,
+      network.buses,
+      stopMatchRoles,
+      originLat,
+      originLng,
+      destinationPoint?.lat ?? originLat,
+      destinationPoint?.lng ?? originLng
+    );
+  }, [
+    matchedLines,
+    stopsWithinRadius,
+    stopsWithinDestRadius,
+    network.buses,
+    stopMatchRoles,
+    originLat,
+    originLng,
+    destinationPoint,
+  ]);
+
+  // Requirement 6: When in match mode, keep ONLY the single closest stop for IDA and single closest stop for VUELTA per line
+  const allowedMatchStopIds = useMemo(() => {
+    if (!destinationPoint || matchedLines.length === 0) return undefined;
+    return filterClosestStopsForMatchedLines(
+      network.stops,
+      matchedLines,
+      stopMatchRoles,
+      originLat,
+      originLng,
+      destinationPoint.lat,
+      destinationPoint.lng
+    );
+  }, [destinationPoint, matchedLines, stopMatchRoles, network.stops, originLat, originLng]);
+
+  // Transit transfer suggestions when no direct match is found
+  const transferSuggestions = useMemo(() => {
+    if (!destinationPoint || matchedLines.length > 0) return [];
+    return computeTransferSuggestions(
+      network,
+      stopsWithinRadius,
+      stopsWithinDestRadius,
+      originLat,
+      originLng,
+      destinationPoint.lat,
+      destinationPoint.lng
+    );
+  }, [destinationPoint, matchedLines.length, network, stopsWithinRadius, stopsWithinDestRadius, originLat, originLng]);
+
+  // Highlighted transfer stops on the map when a transfer suggestion is selected
+  const highlightedTransferStopIds = useMemo(() => {
+    if (!selectedTransfer) return undefined;
+    return new Set([
+      selectedTransfer.firstStop.id,
+      selectedTransfer.transferStopFirst.id,
+      selectedTransfer.transferStopSecond.id,
+      selectedTransfer.destStop.id,
+    ]);
+  }, [selectedTransfer]);
+
+  // Buses to display based on setting: 'in_radius' (default) vs 'matches_only' vs 'all'
+  const displayedBuses = useMemo(() => {
+    // 1. Tag each bus with whether it connects Origin & Destination (Match)
+    const taggedBuses = network.buses.map((bus) => {
+      const codeUpper = bus.lineCode.toUpperCase();
+      const isMatch = matchedLineCodes.has(codeUpper);
+      return {
+        ...bus,
+        isMatch,
+      };
+    });
+
+    if (settings.busFilterMode === 'all') {
+      return taggedBuses;
+    }
+
+    if (settings.busFilterMode === 'matches_only') {
+      return taggedBuses.filter((bus) => {
+        const codeUpper = bus.lineCode.toUpperCase();
+        return (
+          bus.isMatch ||
+          (selectedLine && selectedLine.code.toUpperCase() === codeUpper) ||
+          (selectedStop && selectedStop.lines.some((l) => l.toUpperCase() === codeUpper)) ||
+          (selectedTransfer &&
+            (selectedTransfer.firstLine.code.toUpperCase() === codeUpper ||
+              selectedTransfer.secondLine.code.toUpperCase() === codeUpper))
+        );
+      });
+    }
+
+    // Default 'in_radius': buses that serve Origin zone OR Destination zone (if set), or selected
+    return taggedBuses.filter((bus) => {
+      const codeUpper = bus.lineCode.toUpperCase();
+      const servesOrigin = linesServingRadius.has(codeUpper);
+      const servesDest = destinationPoint ? linesServingDest.has(codeUpper) : false;
+      const isSelectedLine = selectedLine && selectedLine.code.toUpperCase() === codeUpper;
+      const servesSelectedStop =
+        selectedStop && selectedStop.lines.some((l) => l.toUpperCase() === codeUpper);
+      const servesTransfer =
+        selectedTransfer &&
+        (selectedTransfer.firstLine.code.toUpperCase() === codeUpper ||
+          selectedTransfer.secondLine.code.toUpperCase() === codeUpper);
+
+      return servesOrigin || servesDest || isSelectedLine || servesSelectedStop || servesTransfer;
+    });
+  }, [
+    network.buses,
+    settings.busFilterMode,
+    linesServingRadius,
+    linesServingDest,
+    destinationPoint,
+    matchedLineCodes,
+    selectedLine,
+    selectedStop,
+    selectedTransfer,
+  ]);
 
   const displayedNearbyStops = nearbyOnlyInRadius ? stopsWithinRadius : sortedStops;
 
@@ -582,7 +903,7 @@ export default function App() {
               userLocation={userLocation}
               stops={network.stops}
               lines={network.lines}
-              buses={network.buses}
+              buses={displayedBuses}
               selectedStop={selectedStop}
               selectedLine={selectedLine}
               onSelectStop={handleSelectStop}
@@ -590,10 +911,431 @@ export default function App() {
               searchRadius={settings.searchRadiusMeters}
               onRecenter={handleRecenter}
               onManualLocationSelect={handleManualMapLocation}
+              destinationPoint={destinationPoint}
+              onSetDestinationPoint={handleSetDestinationPoint}
+              onClearDestinationPoint={handleClearDestinationPoint}
+              isSettingDestination={isSettingDestination}
+              matchedLineCodes={matchedLineCodes}
+              stopMatchRoles={stopMatchRoles}
+              highlightedTransferStopIds={highlightedTransferStopIds}
+              selectedTransfer={selectedTransfer}
+              allowedMatchStopIds={allowedMatchStopIds}
+              matchedLineETAs={matchedLineETAs}
             />
 
-            {/* Floating Top Controls: Radius & Nearby Bar */}
-            <div className="absolute top-4 right-4 z-[400] flex items-center gap-2">
+            {/* Offline Status Guide Banner */}
+            {isOffline && !isSettingDestination && (
+              <div className="absolute top-16 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-auto z-[450] animate-in fade-in duration-200 pointer-events-auto">
+                <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/95 backdrop-blur-md text-amber-300 font-bold text-xs shadow-xl border border-amber-500/50">
+                  <WifiOff className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Modo sin conexión · {network.stops.length} paradas y {network.lines.length} rutas cargadas en memoria</span>
+                </div>
+              </div>
+            )}
+
+            {/* Unified Top Banner when Setting Destination Point (No overlap with other messages) */}
+            {isSettingDestination && (
+              <div className="absolute top-3 left-3 right-3 md:left-1/2 md:-translate-x-1/2 md:w-auto md:max-w-md z-[480] flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-purple-600/95 backdrop-blur-md text-white font-bold text-xs shadow-2xl border-2 border-white animate-in slide-in-from-top-3 duration-200">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Crosshair className="w-4 h-4 animate-spin text-purple-200 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="truncate block font-black text-xs">Toca el mapa para fijar tu destino</span>
+                    <span className="text-[10px] text-purple-200 font-normal">Radio de búsqueda: ±{formatDistance(settings.searchRadiusMeters)}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsSettingDestination(false)}
+                  className="px-2.5 py-1 rounded-xl bg-purple-800 hover:bg-purple-900 text-white font-bold text-xs shrink-0 shadow active:scale-95 transition-all"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            {/* Floating Destination & Match Hub Card (Lower 50% on mobile leaving top 50% for map, sidebar on desktop) */}
+            {destinationPoint && !isSettingDestination && (
+              <div
+                className={`absolute bottom-0 left-0 right-0 z-[410] w-full transition-all duration-300 md:top-16 md:bottom-auto md:left-4 md:right-auto md:w-96 md:max-w-sm flex flex-col ${
+                  isMatchCardCollapsed
+                    ? 'h-14'
+                    : 'h-[50vh] max-h-[50vh] md:h-auto md:max-h-[85vh]'
+                }`}
+              >
+                <div className="p-3 rounded-t-3xl md:rounded-2xl bg-slate-900/95 backdrop-blur-xl border-t border-x md:border border-purple-500/50 shadow-2xl space-y-2 flex flex-col h-full overflow-hidden">
+                  {/* Mobile visual drag pill & collapse toggle */}
+                  <button
+                    onClick={() => setIsMatchCardCollapsed(!isMatchCardCollapsed)}
+                    className="w-full flex flex-col items-center py-0.5 -mt-1 md:hidden group"
+                    title={
+                      isMatchCardCollapsed
+                        ? 'Expandir panel de Matches (50% pantalla)'
+                        : 'Minimizar panel para ver el mapa completo'
+                    }
+                  >
+                    <div className="w-12 h-1 rounded-full bg-slate-600 group-hover:bg-purple-400 transition-colors" />
+                    <span className="text-[9px] text-slate-400 mt-0.5">
+                      {isMatchCardCollapsed
+                        ? '▲ Desplegar Matches (50% pantalla)'
+                        : '▼ Minimizar para ver mapa completo'}
+                    </span>
+                  </button>
+
+                  {/* Top row: Title, favorite toggle, change and close buttons */}
+                  <div className="flex items-center justify-between gap-1.5 shrink-0">
+                    <div className="flex items-center gap-1.5 text-xs font-black text-purple-300 min-w-0">
+                      <Target className="w-4 h-4 text-purple-400 shrink-0" />
+                      <span className="truncate">{destinationPoint.name || 'Origen ⇄ Destino'}</span>
+                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-semibold border border-purple-500/30 shrink-0">
+                        ±{formatDistance(settings.searchRadiusMeters)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {/* Save to favorites quick button */}
+                      <button
+                        onClick={() => {
+                          if (isDestinationInFavorites) {
+                            const match = favoriteDestinations.find(
+                              (f) =>
+                                destinationPoint &&
+                                Math.hypot(f.lat - destinationPoint.lat, f.lng - destinationPoint.lng) < 0.0004
+                            );
+                            if (match) handleRemoveDestinationFavorite(match.id);
+                          } else if (destinationPoint) {
+                            const newFav: DestinationFavorite = {
+                              id: `fav-${Date.now()}`,
+                              name: destinationPoint.name || 'Destino favorito',
+                              category: 'favorite',
+                              lat: destinationPoint.lat,
+                              lng: destinationPoint.lng,
+                              icon: '⭐',
+                              createdAt: Date.now(),
+                            };
+                            handleAddDestinationFavorite(newFav);
+                          }
+                        }}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-all border flex items-center gap-1 ${
+                          isDestinationInFavorites
+                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                        }`}
+                        title={
+                          isDestinationInFavorites
+                            ? 'En tus favoritos (clic para quitar)'
+                            : 'Guardar en destinos favoritos'
+                        }
+                      >
+                        <Star
+                          className={`w-3 h-3 ${
+                            isDestinationInFavorites
+                              ? 'fill-amber-300 text-amber-300'
+                              : 'text-slate-400'
+                          }`}
+                        />
+                        <span>{isDestinationInFavorites ? 'Favorito' : '+ Fav'}</span>
+                      </button>
+                      <button
+                        onClick={() => setIsDestinationMenuOpen(true)}
+                        className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-purple-300 text-[10px] font-bold transition-all border border-slate-700"
+                        title="Cambiar destino o elegir favorito"
+                      >
+                        Cambiar
+                      </button>
+                      <button
+                        id="btn-clear-destination"
+                        onClick={handleClearDestinationPoint}
+                        className="w-5 h-5 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 text-xs transition-all"
+                        title="Quitar punto de destino"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Distance summary */}
+                  <div className="flex items-baseline justify-between text-[11px] text-slate-300">
+                    <span className="text-slate-400">Distancia entre zonas:</span>
+                    <span className="font-bold text-white text-xs">{formatDistance(distanceOriginToDest || 0)}</span>
+                  </div>
+
+                  {/* If Direct Match lines exist */}
+                  {matchedLines.length > 0 ? (
+                    <div className="space-y-2 pt-1 border-t border-slate-800">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-amber-400 flex items-center gap-1">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>{matchedLines.length} {matchedLines.length === 1 ? 'Línea con Match directo' : 'Líneas con Match directo'}:</span>
+                        </span>
+                      </div>
+
+                      {/* Direction Color Legend */}
+                      <div className="flex items-center justify-between px-2 py-1 rounded-lg bg-slate-950/70 border border-slate-800 text-[10px] font-bold">
+                        <div className="flex items-center gap-1 text-emerald-400">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-emerald-300"></span>
+                          <span>Ida (hacia destino) ➔</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-rose-400">
+                          <span className="w-2.5 h-2.5 rounded-full bg-rose-500 border border-rose-300"></span>
+                          <span>Vuelta (a origen) ↩</span>
+                        </div>
+                      </div>
+
+                      {/* Estimated Arrival Times (ETAs) at matched stops ordered by total door-to-door arrival time (Requirement 4) */}
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {matchedLineETAs.map((eta, idx) => {
+                          const isSelected = selectedLine?.code === eta.lineCode;
+                          return (
+                            <div
+                              key={eta.lineCode}
+                              onClick={() => {
+                                const line = network.lines.find((l) => l.code === eta.lineCode);
+                                if (line) {
+                                  if (selectedLine?.code === line.code) {
+                                    setSelectedLine(null);
+                                  } else {
+                                    handleSelectLine(line);
+                                  }
+                                }
+                              }}
+                              className={`p-2.5 rounded-xl border cursor-pointer transition-all ${
+                                isSelected
+                                  ? 'bg-amber-950/90 border-amber-400 ring-2 ring-amber-400/60 shadow-lg'
+                                  : 'bg-slate-800/80 hover:bg-slate-700/80 border-slate-700/60'
+                              }`}
+                              title={`Línea ${eta.lineCode} - Pulsa para ver trayecto D3 y resaltar paradas`}
+                            >
+                              <div className="flex items-center justify-between gap-2 text-xs">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className="px-2 py-0.5 rounded-md font-black text-[11px] text-white shrink-0 shadow-sm"
+                                    style={{ backgroundColor: eta.color }}
+                                  >
+                                    {eta.transportType === 'metro' ? '🚇 ' : ''}{eta.lineCode}
+                                  </span>
+                                  <div className="truncate">
+                                    <div className="font-bold text-white truncate text-xs flex items-center gap-1.5">
+                                      <span>{eta.lineName}</span>
+                                      {idx === 0 && (
+                                        <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-black border border-amber-500/40">
+                                          ⚡ Más rápida
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 truncate">
+                                      Sube: <strong className="text-slate-200">{eta.originStopName}</strong> ➔ Baja: <strong className="text-slate-200">{eta.destStopName}</strong>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="font-black text-amber-300 text-xs flex items-center justify-end gap-1">
+                                    <Clock className="w-3 h-3 text-amber-400" />
+                                    <span>~{eta.totalTravelMinutes} min a destino</span>
+                                  </div>
+                                  <div className="text-[9px] text-emerald-400 font-bold mt-0.5">
+                                    Llega en {eta.nextArrivalMinutes} min · Sig: {eta.subsequentArrivalMinutes}m
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Door-to-Door Journey Breakdown (Requirement 4: andar + espera + trayecto + andar) */}
+                              <div className="mt-1.5 grid grid-cols-4 gap-1 text-[9px] text-slate-300 bg-slate-900/70 p-1.5 rounded-lg border border-slate-700/50 text-center">
+                                <div className="truncate" title={`Caminando a la parada origen (${eta.originStopName})`}>
+                                  <span className="text-slate-400">Andar</span>
+                                  <div className="font-bold text-white">🚶 {eta.walkToOriginMinutes}m</div>
+                                </div>
+                                <div className="truncate" title={`Tiempo de espera hasta el autobús/metro línea ${eta.lineCode}`}>
+                                  <span className="text-slate-400">Espera</span>
+                                  <div className="font-bold text-amber-300">⏳ {eta.waitTimeMinutes}m</div>
+                                </div>
+                                <div className="truncate" title={`Tiempo en tránsito hasta ${eta.destStopName}`}>
+                                  <span className="text-slate-400">Viaje</span>
+                                  <div className="font-bold text-blue-300">🚌 {eta.transitTimeMinutes}m</div>
+                                </div>
+                                <div className="truncate" title="Caminando desde la parada de bajada al destino final">
+                                  <span className="text-slate-400">Llegada</span>
+                                  <div className="font-bold text-white">🚶 {eta.walkFromDestMinutes}m</div>
+                                </div>
+                              </div>
+
+                              <div className="mt-1.5 flex items-center justify-between text-[9px] text-slate-400 pt-1 border-t border-slate-700/50">
+                                <span className="text-slate-400">
+                                  {isSelected ? 'Paradas resaltadas y trayecto D3 visible' : 'Pulsa para resaltar paradas y ver trayecto D3'}
+                                </span>
+                                <span className="text-amber-400 font-bold">
+                                  {isSelected ? 'Ocultar' : 'Ver en mapa ➔'}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Quick match filter switch */}
+                      <button
+                        id="btn-match-filter-quick"
+                        onClick={() => {
+                          const next = settings.busFilterMode === 'matches_only' ? 'in_radius' : 'matches_only';
+                          handleUpdateSettings({ ...settings, busFilterMode: next });
+                        }}
+                        className={`w-full py-1.5 px-2 rounded-xl text-[10px] font-bold flex items-center justify-center gap-1.5 transition-all border ${
+                          settings.busFilterMode === 'matches_only'
+                            ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md font-black'
+                            : 'bg-slate-800/90 text-amber-300 border-amber-500/30 hover:border-amber-400'
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>
+                          {settings.busFilterMode === 'matches_only'
+                            ? 'Mostrando solo transporte con Match'
+                            : 'Filtrar mapa a solo transporte con Match'}
+                        </span>
+                      </button>
+                    </div>
+                  ) : (
+                    /* When NO direct match: Propose transit transfers (Transbordos) */
+                    <div className="space-y-2 pt-1 border-t border-slate-800">
+                      <div className="flex items-center justify-between text-xs font-bold text-amber-300">
+                        <div className="flex items-center gap-1">
+                          <Shuffle className="w-3.5 h-3.5 text-indigo-400" />
+                          <span>Sin conexión directa · Transbordos:</span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">{transferSuggestions.length} rutas</span>
+                      </div>
+
+                      {transferSuggestions.length === 0 ? (
+                        <div className="p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/60 text-[11px] text-slate-400 space-y-1">
+                          <div className="font-semibold text-slate-300">Sin líneas directas con este radio</div>
+                          <div>Prueba a ampliar el radio de búsqueda ({formatDistance(settings.searchRadiusMeters)}) o reubicar el destino.</div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                          {transferSuggestions.map((t) => {
+                            const isSelected = selectedTransfer?.id === t.id;
+                            return (
+                              <div
+                                key={t.id}
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setSelectedTransfer(null);
+                                    setSelectedLine(null);
+                                  } else {
+                                    setSelectedTransfer(t);
+                                    setSelectedLine(t.firstLine);
+                                  }
+                                }}
+                                className={`p-2 rounded-xl border cursor-pointer transition-all ${
+                                  isSelected
+                                    ? 'bg-indigo-950/80 border-indigo-400 ring-2 ring-indigo-500/50 shadow-lg'
+                                    : 'bg-slate-800/80 border-slate-700/70 hover:border-slate-500'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between text-xs">
+                                  <div className="flex items-center gap-1.5 font-bold">
+                                    <span
+                                      className="px-1.5 py-0.2 rounded text-[10px] text-white"
+                                      style={{ backgroundColor: t.firstLine.color }}
+                                    >
+                                      {t.firstLine.transportType === 'metro' ? '🚇 ' : ''}{t.firstLine.code}
+                                    </span>
+                                    <span className="text-slate-400">➔</span>
+                                    <span
+                                      className="px-1.5 py-0.2 rounded text-[10px] text-white"
+                                      style={{ backgroundColor: t.secondLine.color }}
+                                    >
+                                      {t.secondLine.transportType === 'metro' ? '🚇 ' : ''}{t.secondLine.code}
+                                    </span>
+                                  </div>
+                                  <div className="font-extrabold text-indigo-300 text-xs flex items-center gap-1">
+                                    <Clock className="w-3 h-3 text-indigo-400" />
+                                    <span>~{t.estimatedMinutes} min</span>
+                                  </div>
+                                </div>
+
+                                <div className="mt-1 text-[10px] text-slate-300 flex items-center gap-1">
+                                  <span className="text-indigo-400 font-bold">Transbordo:</span>
+                                  <span className="truncate">{t.transferStationName}</span>
+                                </div>
+
+                                <div className="mt-1 flex items-center justify-between text-[9px] text-slate-400 pt-1 border-t border-slate-700/60">
+                                  <span className="truncate">Sube en: {t.firstStop.name}</span>
+                                  <span className="text-indigo-300 font-bold shrink-0 ml-1">
+                                    {isSelected ? 'Ocultar ruta' : 'Ver en mapa ➔'}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Floating Top Controls: Radius, Destination & Bus Filter Bar (Hidden when setting destination to prevent overlapping messages) */}
+            {!isSettingDestination && (
+              <div className="absolute top-4 right-4 z-[400] flex items-center gap-1.5 sm:gap-2 max-w-[calc(100vw-2rem)] flex-wrap justify-end">
+                {/* Destination Point Button */}
+                <button
+                  id="btn-toggle-destination"
+                  onClick={() => {
+                    setIsDestinationMenuOpen(true);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
+                    destinationPoint
+                      ? 'bg-purple-950/90 hover:bg-purple-900 text-purple-300 border-purple-500/60 ring-1 ring-purple-500/30'
+                      : 'bg-slate-900/90 hover:bg-slate-800 text-purple-300 border-slate-700/80'
+                  }`}
+                  title={destinationPoint ? 'Punto de destino fijado. Clic para cambiar o ver opciones.' : 'Fijar un destino frecuente o marcar en el mapa'}
+                >
+                  <Target className="w-3.5 h-3.5 text-purple-400" />
+                  <span>
+                    {destinationPoint
+                      ? `Destino: ${formatDistance(distanceOriginToDest || 0)}`
+                      : '+ Fijar Destino'}
+                  </span>
+                  <ChevronDown className="w-3 h-3 text-purple-400" />
+                </button>
+
+              {/* Quick Bus Filter Toggle Button */}
+              <button
+                id="btn-toggle-bus-filter"
+                onClick={() => {
+                  let nextMode: UserSettings['busFilterMode'] = 'in_radius';
+                  if (destinationPoint && matchedLines.length > 0) {
+                    if (settings.busFilterMode === 'in_radius') nextMode = 'matches_only';
+                    else if (settings.busFilterMode === 'matches_only') nextMode = 'all';
+                    else nextMode = 'in_radius';
+                  } else {
+                    nextMode = settings.busFilterMode === 'in_radius' ? 'all' : 'in_radius';
+                  }
+                  handleUpdateSettings({ ...settings, busFilterMode: nextMode });
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
+                  settings.busFilterMode === 'matches_only'
+                    ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400/50 font-black'
+                    : settings.busFilterMode === 'in_radius'
+                    ? 'bg-slate-900/90 hover:bg-slate-800 text-amber-300 border-amber-500/50 ring-1 ring-amber-500/20'
+                    : 'bg-blue-600 text-white border-blue-400 hover:bg-blue-500'
+                }`}
+                title={
+                  settings.busFilterMode === 'matches_only'
+                    ? `Mostrando solo autobuses con Match directo (${displayedBuses.length}). Clic para ver todos.`
+                    : settings.busFilterMode === 'in_radius'
+                    ? `Mostrando autobuses de zonas activas (${displayedBuses.length}). Clic para alternar.`
+                    : `Mostrando todos los autobuses (${network.buses.length}). Clic para filtrar.`
+                }
+              >
+                <Bus className={`w-3.5 h-3.5 ${settings.busFilterMode === 'matches_only' ? 'text-slate-950' : 'text-amber-400'}`} />
+                <span>
+                  {settings.busFilterMode === 'matches_only'
+                    ? `Buses: Solo Match (${displayedBuses.length})`
+                    : settings.busFilterMode === 'in_radius'
+                    ? `Buses: En radio (${displayedBuses.length})`
+                    : `Buses: Todos (${network.buses.length})`}
+                </span>
+              </button>
+
               {/* Quick Search Radius Selector Button & Popover */}
               <div className="relative">
                 <button
@@ -681,6 +1423,56 @@ export default function App() {
                     <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800 text-center">
                       <span className="text-emerald-400 font-bold">{stopsWithinRadius.length}</span> de {network.stops.length} paradas en este radio
                     </div>
+
+                    {/* Bus filter mode option inside popover */}
+                    <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-300">Autobuses en el mapa:</span>
+                        <span className="text-[11px] font-bold text-amber-400">
+                          {displayedBuses.length} visibles
+                        </span>
+                      </div>
+                      <div className={`grid ${destinationPoint ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
+                        <button
+                          id="btn-popover-bus-in-radius"
+                          onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'in_radius' })}
+                          className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                            settings.busFilterMode === 'in_radius'
+                              ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
+                              : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                          }`}
+                        >
+                          <Check className={`w-3 h-3 ${settings.busFilterMode === 'in_radius' ? 'opacity-100' : 'opacity-0'}`} />
+                          <span>{destinationPoint ? 'En zonas' : 'En mi radio'}</span>
+                        </button>
+                        {destinationPoint && (
+                          <button
+                            id="btn-popover-bus-matches"
+                            onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'matches_only' })}
+                            className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                              settings.busFilterMode === 'matches_only'
+                                ? 'bg-amber-500 text-slate-950 border-amber-300 font-bold shadow-sm'
+                                : 'bg-slate-800/80 text-amber-300 border-slate-700 hover:text-white'
+                            }`}
+                          >
+                            <Check className={`w-3 h-3 ${settings.busFilterMode === 'matches_only' ? 'opacity-100' : 'opacity-0'}`} />
+                            <span>Matches ({matchedLines.length})</span>
+                          </button>
+                        )}
+                        <button
+                          id="btn-popover-bus-all"
+                          onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'all' })}
+                          className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                            settings.busFilterMode === 'all'
+                              ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
+                              : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                          }`}
+                        >
+                          <Check className={`w-3 h-3 ${settings.busFilterMode === 'all' ? 'opacity-100' : 'opacity-0'}`} />
+                          <span>Todos</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -698,6 +1490,7 @@ export default function App() {
                 <span>Paradas ({stopsWithinRadius.length})</span>
               </button>
             </div>
+            )}
 
             {/* Quick Nearby Stops Drawer Overlay */}
             {showNearbyDrawer && (
@@ -839,6 +1632,7 @@ export default function App() {
             favorites={favorites}
             stops={network.stops}
             lines={network.lines}
+            favoriteDestinations={favoriteDestinations}
             userLat={userLocation?.lat}
             userLng={userLocation?.lng}
             onSelectStop={(stop) => {
@@ -850,8 +1644,14 @@ export default function App() {
               setSelectedStop(null);
               setActiveTab('map');
             }}
+            onSelectDestination={(lat, lng, name) => {
+              handleSetDestinationPoint(lat, lng, name);
+              setActiveTab('map');
+            }}
             onRemoveFavorite={handleRemoveFavorite}
             onAddStopFavorite={handleToggleFavoriteStop}
+            onAddDestinationFavorite={handleAddDestinationFavorite}
+            onRemoveDestinationFavorite={handleRemoveDestinationFavorite}
             isOffline={isOffline}
           />
         )}
@@ -891,6 +1691,29 @@ export default function App() {
         onSelectPreset={handleSelectPreset}
         onRequestRealGPS={startGpsTracking}
         isRealGpsActive={isRealGpsActive}
+      />
+
+      {/* Destination Menu Dropdown Modal (Recent 3 destinations, favorites, map picker) */}
+      <DestinationMenu
+        isOpen={isDestinationMenuOpen}
+        onClose={() => setIsDestinationMenuOpen(false)}
+        onStartMapSelection={() => {
+          setIsSettingDestination(true);
+          setIsDestinationMenuOpen(false);
+        }}
+        onSelectDestination={(lat, lng, name) => {
+          handleSetDestinationPoint(lat, lng, name);
+          setIsDestinationMenuOpen(false);
+        }}
+        onClearDestination={handleClearDestinationPoint}
+        currentDestination={destinationPoint}
+        userLocation={userLocation}
+        center={network.center}
+        searchRadius={settings.searchRadiusMeters}
+        recentDestinations={recentDestinations}
+        favoriteDestinations={favoriteDestinations}
+        onAddFavorite={handleAddDestinationFavorite}
+        onRemoveFavorite={handleRemoveDestinationFavorite}
       />
     </div>
   );

@@ -5,6 +5,7 @@ import {
   BARCELONA_STOPS,
   getBarcelonaTransitNetwork,
 } from '../data/barcelonaTransit';
+import { loadCachedNetworkFromIDB } from './storage';
 
 export interface TransitNetwork {
   cityName: string;
@@ -57,37 +58,59 @@ export const PRESET_HUBS = [
 ];
 
 /**
- * Generates initial live moving buses for active lines
+ * Generates live moving buses for all active transit lines
  */
 export function generateBusesForTmbLines(lines: BusLine[], stops: BusStop[]): LiveBus[] {
   const buses: LiveBus[] = [];
-  const linesWithPaths = lines.filter((l) => l.path && l.path.length >= 3);
-  const activeLines = linesWithPaths.slice(0, 40);
+  const stopMap = new Map(stops.map((s) => [s.id, s]));
 
-  activeLines.forEach((line, lIdx) => {
-    const path = line.path;
-    const midIdx = Math.floor(path.length * 0.35);
-    const pos = path[midIdx] || path[0];
-    const nextPos = path[Math.min(path.length - 1, midIdx + 1)] || pos;
-    const heading = Math.round(getBearing(pos[0], pos[1], nextPos[0], nextPos[1]));
+  lines.forEach((line, lIdx) => {
+    let path = line.path;
+    if (!path || path.length < 2) {
+      if (line.stops && line.stops.length >= 2) {
+        path = line.stops
+          .map((sId) => stopMap.get(sId))
+          .filter((s): s is BusStop => Boolean(s))
+          .map((s) => [s.lat, s.lng] as [number, number]);
+      }
+    }
 
-    const nearestStop = line.stops && line.stops.length > 0
-      ? line.stops[0]
-      : (stops[lIdx % stops.length]?.id || 'stop-1');
+    if (!path || path.length < 2) {
+      return;
+    }
 
-    buses.push({
-      id: `bus-tmb-${line.code}-1`,
-      lineCode: line.code,
-      plate: `TMB-${line.code}-${2100 + lIdx}`,
-      lat: pos[0],
-      lng: pos[1],
-      heading,
-      speedKmh: 24,
-      nextStopId: nearestStop,
-      distanceToNextStopMeters: 180,
-      occupancy: lIdx % 3 === 0 ? 'low' : lIdx % 3 === 1 ? 'medium' : 'high',
-      isAccessible: true,
-    });
+    const numBuses = line.frequencyMinutes <= 7 || path.length > 30 ? 2 : 1;
+
+    for (let bIdx = 0; bIdx < numBuses; bIdx++) {
+      const fraction = numBuses === 1 ? 0.45 : (bIdx === 0 ? 0.25 : 0.75);
+      const midIdx = Math.floor(path.length * fraction) % path.length;
+      const pos = path[midIdx] || path[0];
+      const nextIdx = (midIdx + 1) % path.length;
+      const nextPos = path[nextIdx] || pos;
+      const heading = Math.round(getBearing(pos[0], pos[1], nextPos[0], nextPos[1]));
+
+      const stopIdx = Math.floor(fraction * (line.stops?.length || 1));
+      const nearestStop = line.stops && line.stops.length > 0
+        ? (line.stops[stopIdx] || line.stops[0])
+        : (stops[lIdx % stops.length]?.id || 'stop-1');
+
+      buses.push({
+        id: `bus-tmb-${line.code}-${bIdx + 1}`,
+        lineCode: line.code,
+        plate: `TMB-${line.code}-${2000 + lIdx * 3 + bIdx}`,
+        lat: pos[0],
+        lng: pos[1],
+        heading,
+        speedKmh: Math.floor(20 + Math.random() * 8),
+        nextStopId: nearestStop,
+        distanceToNextStopMeters: Math.floor(100 + Math.random() * 200),
+        occupancy: (lIdx + bIdx) % 3 === 0 ? 'low' : (lIdx + bIdx) % 3 === 1 ? 'medium' : 'high',
+        isAccessible: true,
+        pathIndex: midIdx,
+        pathProgress: 0,
+        transportType: line.transportType || (line.code.startsWith('L') || line.code === 'FM' ? 'metro' : 'bus'),
+      });
+    }
   });
 
   return buses;
@@ -131,6 +154,23 @@ export async function fetchTmbNetwork(
     }
   } catch (err) {
     console.warn('[TransitData] Error al obtener red completa de TMB:', err);
+  }
+
+  // If network is offline, attempt to restore complete real network from IndexedDB
+  try {
+    const offlineCached = await loadCachedNetworkFromIDB();
+    if (offlineCached && offlineCached.stops && offlineCached.stops.length > 20) {
+      console.log(`[TransitData] ⚡ Modo sin conexión activo: Restablecida red completa offline desde IndexedDB (${offlineCached.stops.length} paradas, ${offlineCached.lines.length} líneas)`);
+      const buses = generateBusesForTmbLines(offlineCached.lines, offlineCached.stops);
+      return {
+        ...offlineCached,
+        cityName: offlineCached.cityName || 'Barcelona (Modo Offline)',
+        center: [centerLat, centerLng],
+        buses,
+      };
+    }
+  } catch (e) {
+    console.warn('[TransitData] IndexedDB offline restore error:', e);
   }
 
   return generateNetworkForLocation(centerLat, centerLng, cityName);
@@ -192,42 +232,67 @@ export function calculateStopArrivals(
 }
 
 /**
- * Step simulation: Advances buses along their paths and updates stop ETAs
+ * Step simulation: Advances buses strictly along line path coordinates
  */
 export function stepSimulation(network: TransitNetwork): TransitNetwork {
   const updatedBuses = network.buses.map((bus) => {
     const line = network.lines.find((l) => l.code === bus.lineCode);
-    if (!line || line.path.length < 2) return bus;
+    if (!line || !line.path || line.path.length < 2) return bus;
 
-    // Move bus slightly towards next target coordinate along line.path
-    const targetStop = network.stops.find((s) => s.id === bus.nextStopId) || network.stops[0];
-    if (!targetStop) return bus;
+    const path = line.path;
+    let curIndex =
+      typeof bus.pathIndex === 'number' && bus.pathIndex >= 0 && bus.pathIndex < path.length
+        ? bus.pathIndex
+        : 0;
+    let curProgress = typeof bus.pathProgress === 'number' ? bus.pathProgress : 0;
 
-    const bearing = getBearing(bus.lat, bus.lng, targetStop.lat, targetStop.lng);
-    const distToStop = getDistanceMeters(bus.lat, bus.lng, targetStop.lat, targetStop.lng);
+    const isNearEnd = curIndex >= path.length - 1;
+    const pFrom = isNearEnd && curIndex > 0 ? path[curIndex - 1] : path[curIndex];
+    const pTo = isNearEnd ? path[curIndex] : path[(curIndex + 1) % path.length];
+    const segDist = Math.max(3, getDistanceMeters(pFrom[0], pFrom[1], pTo[0], pTo[1]));
 
-    // If close to current target stop (< 45m), pick next stop along the line
-    let nextStopId = bus.nextStopId;
-    if (distToStop < 45 && line.stops && line.stops.length > 0) {
-      const stopList = line.stops;
-      const currentIdx = stopList.indexOf(bus.nextStopId);
-      const nextIdx = (currentIdx + 1) % stopList.length;
-      nextStopId = stopList[nextIdx];
+    // In ~2.5s tick at ~22 km/h (6.1 m/s), vehicle moves ~15.2 meters
+    const speedMps = (bus.speedKmh || 22) / 3.6;
+    const stepMeters = speedMps * 2.5;
+
+    curProgress += stepMeters / segDist;
+
+    while (curProgress >= 1) {
+      curProgress -= 1;
+      curIndex = (curIndex + 1) % path.length;
     }
 
-    const stepDistanceDeg = 0.00012; // roughly 13 meters
-    const rad = (bearing * Math.PI) / 180;
-    const newLat = bus.lat + Math.cos(rad) * stepDistanceDeg;
-    const newLng = bus.lng + Math.sin(rad) * stepDistanceDeg * 1.3;
+    const startPt = path[curIndex];
+    const nextIdx = (curIndex + 1) % path.length;
+    const endPt = curIndex === path.length - 1 && curIndex > 0 ? path[curIndex] : path[nextIdx];
+
+    // Mathematically strict on-road interpolation: point is always on the road segment
+    const newLat = startPt[0] + (endPt[0] - startPt[0]) * curProgress;
+    const newLng = startPt[1] + (endPt[1] - startPt[1]) * curProgress;
+
+    // Heading calculation: avoid terminus cross-city vector
+    let heading = bus.heading;
+    if (curIndex < path.length - 1) {
+      heading = Math.round(getBearing(path[curIndex][0], path[curIndex][1], path[curIndex + 1][0], path[curIndex + 1][1]));
+    } else if (curIndex > 0) {
+      heading = Math.round(getBearing(path[curIndex - 1][0], path[curIndex - 1][1], path[curIndex][0], path[curIndex][1]));
+    }
+
+    let nextStopId = bus.nextStopId;
+    if (line.stops && line.stops.length > 0) {
+      const stopProgressIdx = Math.floor((curIndex / path.length) * line.stops.length);
+      nextStopId = line.stops[(stopProgressIdx + 1) % line.stops.length] || line.stops[0];
+    }
 
     return {
       ...bus,
       lat: newLat,
       lng: newLng,
-      heading: bearing,
+      heading,
+      pathIndex: curIndex,
+      pathProgress: curProgress,
       nextStopId,
-      distanceToNextStopMeters: Math.max(20, distToStop - 15),
-      speedKmh: Math.min(48, Math.max(16, bus.speedKmh + (Math.random() - 0.5) * 4)),
+      speedKmh: Math.min(42, Math.max(16, bus.speedKmh + (Math.random() - 0.5) * 2)),
     };
   });
 

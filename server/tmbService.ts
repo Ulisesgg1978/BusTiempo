@@ -119,12 +119,27 @@ class TmbService {
           const path: [number, number][] = [];
 
           if (geom?.type === 'MultiLineString' && Array.isArray(geom.coordinates)) {
-            for (const segment of geom.coordinates) {
-              if (Array.isArray(segment)) {
-                for (const coord of segment) {
-                  if (Array.isArray(coord) && coord.length >= 2) {
-                    path.push([coord[1], coord[0]]);
-                  }
+            const validSegments = geom.coordinates.filter(
+              (seg: any) => Array.isArray(seg) && seg.length >= 2
+            );
+
+            if (validSegments.length === 1) {
+              for (const coord of validSegments[0]) {
+                if (Array.isArray(coord) && coord.length >= 2) {
+                  path.push([coord[1], coord[0]]);
+                }
+              }
+            } else if (validSegments.length > 1) {
+              // Pick the longest continuous route segment to avoid diagonal cross-city jumps
+              let bestSegment = validSegments[0];
+              for (const seg of validSegments) {
+                if (seg.length > bestSegment.length) {
+                  bestSegment = seg;
+                }
+              }
+              for (const coord of bestSegment) {
+                if (Array.isArray(coord) && coord.length >= 2) {
+                  path.push([coord[1], coord[0]]);
                 }
               }
             }
@@ -137,7 +152,7 @@ class TmbService {
           }
 
           const lineCode = String(p.NOM_LINIA || p.CODI_LINIA);
-          const isMetro = p.NOM_TIPUS_TRANSPORT === 'METRO';
+          const isMetro = p.NOM_TIPUS_TRANSPORT === 'METRO' || String(p.NOM_LINIA).startsWith('L') || p.NOM_LINIA === 'FM';
 
           parsedLines.push({
             id: `line-${lineCode}`,
@@ -150,6 +165,7 @@ class TmbService {
             frequencyMinutes: isMetro ? 3 : 7,
             stops: [],
             path,
+            transportType: isMetro ? 'metro' : 'bus',
           });
         }
 
@@ -177,6 +193,7 @@ class TmbService {
             wheelchairAccessible: true,
             shelter,
             nextArrivals: [],
+            transportType: 'bus',
           };
 
           parsedStops.push(stopObj);
@@ -184,7 +201,7 @@ class TmbService {
         }
 
         // 4. Map line-stop associations in parallel batches
-        console.log('[TMB Service] Asociando paradas a líneas con TMB linies/bus/{id}/parades...');
+        console.log('[TMB Service] Asociando paradas a líneas con TMB linies/bus/{id}/parades y metro/{id}/estacions...');
         const stopToLines = new Map<string, Set<string>>();
         const lineToStops = new Map<string, string[]>();
 
@@ -221,6 +238,63 @@ class TmbService {
             })
           );
         }
+
+        // 4b. Map Metro stations for all metro lines
+        const metroStationCodeToStop = new Map<string, BusStop>();
+        await Promise.all(
+          rawMetroFeatures.map(async (mFeat: any) => {
+            const codiLinia = mFeat.properties.CODI_LINIA;
+            const nomLinia = String(mFeat.properties.NOM_LINIA);
+            try {
+              const r = await fetch(
+                `https://api.tmb.cat/v1/transit/linies/metro/${codiLinia}/estacions?app_id=${encodeURIComponent(appId)}&app_key=${encodeURIComponent(appKey)}`,
+                {
+                  headers: { Accept: 'application/json' },
+                  signal: AbortSignal.timeout(7000),
+                }
+              );
+              if (!r.ok) return;
+              const d = await r.json();
+              if (d?.features) {
+                const sIds: string[] = [];
+                for (const ef of d.features) {
+                  const ep = ef.properties;
+                  const codiEstacio = String(ep.CODI_ESTACIO || ep.ID_ESTACIO);
+                  const stopId = `metro-${codiEstacio}`;
+                  sIds.push(stopId);
+
+                  let existingStation = metroStationCodeToStop.get(codiEstacio);
+                  if (!existingStation) {
+                    const coords = ef.geometry?.coordinates || [2.1699, 41.3879];
+                    existingStation = {
+                      id: stopId,
+                      code: `M${codiEstacio}`,
+                      name: ep.NOM_ESTACIO ? `Metro ${ep.NOM_ESTACIO}` : `Estación Metro ${codiEstacio}`,
+                      lat: coords[1],
+                      lng: coords[0],
+                      address: `Red de Metro TMB (${nomLinia})`,
+                      lines: [nomLinia],
+                      wheelchairAccessible: ep.NOM_TIPUS_ACCESSIBILITAT === 'Accessible' || true,
+                      shelter: true,
+                      nextArrivals: [],
+                      transportType: 'metro',
+                    };
+                    metroStationCodeToStop.set(codiEstacio, existingStation);
+                    parsedStops.push(existingStation);
+                  } else {
+                    if (!existingStation.lines.includes(nomLinia)) {
+                      existingStation.lines.push(nomLinia);
+                      existingStation.lines.sort();
+                    }
+                  }
+                }
+                lineToStops.set(nomLinia, sIds);
+              }
+            } catch {
+              // Ignore single metro line timeout
+            }
+          })
+        );
 
         // 5. Apply mapped lines to stops and stops to lines
         for (const stop of parsedStops) {

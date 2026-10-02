@@ -1,3 +1,5 @@
+export type TransportType = 'bus' | 'metro' | 'nitbus' | 'rodalies' | 'fgc' | 'tram';
+
 export interface BusStop {
   id: string;
   code: string;
@@ -9,7 +11,14 @@ export interface BusStop {
   wheelchairAccessible: boolean;
   shelter: boolean;
   nextArrivals: Arrival[];
-  transportType?: 'bus' | 'metro';
+  transportType?: TransportType;
+}
+
+export interface LineOperatingHours {
+  start: string; // e.g. "05:30"
+  end: string;   // e.g. "22:45"
+  days?: string; // e.g. "L-D", "V-S"
+  note?: string;
 }
 
 export interface BusLine {
@@ -23,7 +32,9 @@ export interface BusLine {
   frequencyMinutes: number;
   stops: string[]; // stop IDs in order
   path: [number, number][]; // lat, lng coordinates
-  transportType?: 'bus' | 'metro';
+  transportType?: TransportType;
+  operatingHours?: LineOperatingHours;
+  isNightLine?: boolean;
 }
 
 export interface LiveBus {
@@ -42,7 +53,7 @@ export interface LiveBus {
   pathIndex?: number;
   pathProgress?: number;
   isMatch?: boolean;
-  transportType?: 'bus' | 'metro';
+  transportType?: TransportType;
 }
 
 export interface TargetPoint {
@@ -83,7 +94,7 @@ export interface MatchedLineETA {
   lineName: string;
   color: string;
   textColor: string;
-  transportType: 'bus' | 'metro';
+  transportType: TransportType;
   originStopId: string;
   originStopName: string;
   destStopId: string;
@@ -92,6 +103,10 @@ export interface MatchedLineETA {
   subsequentArrivalMinutes: number;
   direction: 'outbound' | 'return' | 'bidirectional';
   liveVehicleCount: number;
+  inService?: boolean;
+  scheduleText?: string;
+  isRealTime?: boolean; // true if derived from live vehicle GPS / iBus telemetry, false if frequency estimate
+  sourceType?: 'ibus_real' | 'frequency_estimate';
   // Desglose de tiempos para viaje puerta a puerta
   walkToOriginMinutes: number;   // Tiempo a pie hasta la parada de origen
   waitTimeMinutes: number;       // Tiempo de espera hasta que pase el transporte
@@ -128,6 +143,8 @@ export interface Arrival {
   lineColor: string;
   lineTextColor: string;
   isAlertActive?: boolean;
+  isRealTime?: boolean;
+  sourceType?: 'ibus_real' | 'frequency_estimate';
 }
 
 export interface FavoriteItem {

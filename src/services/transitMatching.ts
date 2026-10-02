@@ -7,6 +7,7 @@ import {
   TransitTransferSuggestion,
 } from '../types/transit';
 import { getDistanceMeters } from '../utils/geo';
+import { getLineOperatingStatus } from '../utils/operatingHours';
 
 /**
  * Finds the closest index along a route path for a given stop coordinate
@@ -261,12 +262,18 @@ export function computeMatchedLineETAs(
     // Total Door-to-Door Journey Time
     const totalTravelMinutes = walkToOriginMinutes + waitTimeMinutes + transitTimeMinutes + walkFromDestMinutes;
 
+    // Operating status
+    const opStatus = getLineOperatingStatus(line);
+    const transportType = line.transportType || (isMetro ? 'metro' : 'bus');
+    const isRealTime = Boolean(primaryOriginStop && lineBuses.length > 0);
+    const sourceType: 'ibus_real' | 'frequency_estimate' = isRealTime ? 'ibus_real' : 'frequency_estimate';
+
     results.push({
       lineCode: line.code,
       lineName: line.name,
       color: line.color,
       textColor: line.textColor || '#ffffff',
-      transportType: isMetro ? 'metro' : 'bus',
+      transportType,
       originStopId,
       originStopName,
       destStopId,
@@ -275,6 +282,10 @@ export function computeMatchedLineETAs(
       subsequentArrivalMinutes,
       direction: 'outbound',
       liveVehicleCount: lineBuses.length,
+      inService: opStatus.inService,
+      scheduleText: opStatus.scheduleText,
+      isRealTime,
+      sourceType,
       walkToOriginMinutes,
       waitTimeMinutes,
       transitTimeMinutes,

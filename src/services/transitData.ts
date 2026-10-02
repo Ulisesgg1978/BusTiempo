@@ -6,6 +6,7 @@ import {
   getBarcelonaTransitNetwork,
 } from '../data/barcelonaTransit';
 import { loadCachedNetworkFromIDB } from './storage';
+import { getLineOperatingStatus } from '../utils/operatingHours';
 
 export interface TransitNetwork {
   cityName: string;
@@ -65,6 +66,12 @@ export function generateBusesForTmbLines(lines: BusLine[], stops: BusStop[]): Li
   const stopMap = new Map(stops.map((s) => [s.id, s]));
 
   lines.forEach((line, lIdx) => {
+    // Only generate live vehicles for lines currently in service according to real schedules
+    const op = getLineOperatingStatus(line);
+    if (!op.inService) {
+      return;
+    }
+
     let path = line.path;
     if (!path || path.length < 2) {
       if (line.stops && line.stops.length >= 2) {
@@ -235,7 +242,29 @@ export function calculateStopArrivals(
  * Step simulation: Advances buses strictly along line path coordinates
  */
 export function stepSimulation(network: TransitNetwork): TransitNetwork {
-  const updatedBuses = network.buses.map((bus) => {
+  // 1. Filter out buses belonging to lines whose service has ended
+  const activeBuses = network.buses.filter((bus) => {
+    const line = network.lines.find((l) => l.code === bus.lineCode);
+    if (!line) return false;
+    const op = getLineOperatingStatus(line);
+    return op.inService;
+  });
+
+  // 2. Check if any currently operating line needs buses (e.g. just started service)
+  const existingLineCodes = new Set(activeBuses.map((b) => b.lineCode));
+  const missingLines = network.lines.filter((l) => {
+    if (existingLineCodes.has(l.code)) return false;
+    const op = getLineOperatingStatus(l);
+    return op.inService && ((l.path && l.path.length >= 2) || (l.stops && l.stops.length >= 2));
+  });
+
+  let currentBuses = activeBuses;
+  if (missingLines.length > 0) {
+    const newlySpawned = generateBusesForTmbLines(missingLines, network.stops);
+    currentBuses = [...activeBuses, ...newlySpawned];
+  }
+
+  const updatedBuses = currentBuses.map((bus) => {
     const line = network.lines.find((l) => l.code === bus.lineCode);
     if (!line || !line.path || line.path.length < 2) return bus;
 

@@ -15,6 +15,7 @@ import {
   Dumbbell,
   Bookmark,
   Sparkles,
+  Search,
 } from 'lucide-react';
 import { TargetPoint, RecentDestination, DestinationFavorite, UserPosition } from '../types/transit';
 import { getDistanceMeters, formatDistance } from '../utils/geo';
@@ -34,6 +35,7 @@ interface DestinationMenuProps {
   favoriteDestinations: DestinationFavorite[];
   onAddFavorite: (fav: DestinationFavorite) => void;
   onRemoveFavorite: (id: string) => void;
+  onOpenAddressSearch?: () => void;
 }
 
 export const DestinationMenu: React.FC<DestinationMenuProps> = ({
@@ -50,6 +52,7 @@ export const DestinationMenu: React.FC<DestinationMenuProps> = ({
   favoriteDestinations,
   onAddFavorite,
   onRemoveFavorite,
+  onOpenAddressSearch,
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -113,46 +116,75 @@ export const DestinationMenu: React.FC<DestinationMenuProps> = ({
           {/* Scrollable Content */}
           <div className="p-4 space-y-3.5 overflow-y-auto flex-1">
             {/* Quick Actions Grid */}
-            <div className="grid grid-cols-2 gap-2">
-              {/* Action 1: Click on Map */}
+            <div className="grid grid-cols-3 gap-2">
+              {/* Action 1: Search by address */}
+              {onOpenAddressSearch && (
+                <button
+                  id="btn-dest-search-address"
+                  onClick={() => {
+                    onOpenAddressSearch();
+                    onClose();
+                  }}
+                  className="p-2.5 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 hover:from-blue-500 hover:to-indigo-600 text-white font-bold text-xs flex flex-col justify-between shadow-lg shadow-blue-600/30 active:scale-[0.98] transition-all"
+                >
+                  <div className="flex items-center justify-between w-full">
+                    <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+                      <Search className="w-3.5 h-3.5" />
+                    </div>
+                    <span className="text-[9px] bg-white/20 px-1 py-0.5 rounded font-black">Dirección</span>
+                  </div>
+                  <div className="text-left mt-2">
+                    <div className="font-extrabold text-[11px] leading-tight">Buscar Dirección</div>
+                    <div className="text-[9px] text-blue-200 line-clamp-1 mt-0.5">
+                      Calles y plazas
+                    </div>
+                  </div>
+                </button>
+              )}
+
+              {/* Action 2: Click on Map */}
               <button
                 id="btn-dest-pick-map"
                 onClick={() => {
                   onStartMapSelection();
                   onClose();
                 }}
-                className="p-3 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs flex flex-col justify-between shadow-lg shadow-purple-600/30 active:scale-[0.98] transition-all"
+                className={`p-2.5 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs flex flex-col justify-between shadow-lg shadow-purple-600/30 active:scale-[0.98] transition-all ${
+                  !onOpenAddressSearch ? 'col-span-1' : ''
+                }`}
               >
                 <div className="flex items-center justify-between w-full">
-                  <div className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center">
-                    <Crosshair className="w-4 h-4" />
+                  <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+                    <Crosshair className="w-3.5 h-3.5" />
                   </div>
-                  <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded font-black">Tocar</span>
+                  <span className="text-[9px] bg-white/20 px-1 py-0.5 rounded font-black">Tocar</span>
                 </div>
                 <div className="text-left mt-2">
-                  <div className="font-extrabold text-xs">Marcar en el mapa</div>
-                  <div className="text-[10px] text-purple-200 line-clamp-1">
-                    Cualquier calle o punto
+                  <div className="font-extrabold text-[11px] leading-tight">Marcar en mapa</div>
+                  <div className="text-[9px] text-purple-200 line-clamp-1 mt-0.5">
+                    Cualquier punto
                   </div>
                 </div>
               </button>
 
-              {/* Action 2: Create new favorite destination */}
+              {/* Action 3: Create new favorite destination */}
               <button
                 id="btn-dest-create-fav"
                 onClick={() => setShowCreateModal(true)}
-                className="p-3 rounded-2xl bg-gradient-to-br from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold text-xs flex flex-col justify-between shadow-lg shadow-amber-600/20 active:scale-[0.98] transition-all"
+                className={`p-2.5 rounded-2xl bg-gradient-to-br from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white font-bold text-xs flex flex-col justify-between shadow-lg shadow-amber-600/20 active:scale-[0.98] transition-all ${
+                  !onOpenAddressSearch ? 'col-span-1' : ''
+                }`}
               >
                 <div className="flex items-center justify-between w-full">
-                  <div className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center">
-                    <Star className="w-4 h-4 fill-white" />
+                  <div className="w-6 h-6 rounded-lg bg-white/20 flex items-center justify-center">
+                    <Star className="w-3.5 h-3.5 fill-white" />
                   </div>
-                  <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded font-black">+ Nuevo</span>
+                  <span className="text-[9px] bg-white/20 px-1 py-0.5 rounded font-black">+ Nuevo</span>
                 </div>
                 <div className="text-left mt-2">
-                  <div className="font-extrabold text-xs">Crear Favorito</div>
-                  <div className="text-[10px] text-amber-200 line-clamp-1">
-                    Casa, trabajo, gym...
+                  <div className="font-extrabold text-[11px] leading-tight">Crear Favorito</div>
+                  <div className="text-[9px] text-amber-200 line-clamp-1 mt-0.5">
+                    Casa, trabajo...
                   </div>
                 </div>
               </button>

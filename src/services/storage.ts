@@ -9,13 +9,15 @@ const SETTINGS_KEY = 'bustiempo_user_settings';
 const RECENT_DESTINATIONS_KEY = 'bustiempo_recent_destinations_v1';
 const FAVORITE_DESTINATIONS_KEY = 'bustiempo_favorite_destinations_v1';
 
+export type BusFilterMode = 'none' | 'in_radius' | 'all' | 'matches_only';
+
 export interface UserSettings {
   alertThresholdMeters: number; // e.g. 500
   alertThresholdMinutes: number; // e.g. 3
   soundEnabled: boolean;
   vibrateEnabled: boolean;
   searchRadiusMeters: number; // e.g. 1000
-  busFilterMode: 'in_radius' | 'all' | 'matches_only'; // default 'in_radius'
+  busFilterMode: BusFilterMode; // 'none' (sin vehículos) | 'in_radius' (en radio) | 'all' (todos) | 'matches_only'
 }
 
 export const DEFAULT_SETTINGS: UserSettings = {

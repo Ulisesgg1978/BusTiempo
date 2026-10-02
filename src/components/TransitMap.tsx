@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import * as d3 from 'd3';
-import { LocateFixed, Layers, Crosshair } from 'lucide-react';
+import { LocateFixed, Layers, Crosshair, Star } from 'lucide-react';
 import {
   BusStop,
   BusLine,
@@ -39,6 +39,10 @@ interface TransitMapProps {
   selectedTransfer?: TransitTransferSuggestion | null;
   allowedMatchStopIds?: Set<string>;
   matchedLineETAs?: MatchedLineETA[];
+  showBuses?: boolean;
+  showStops?: boolean;
+  explorePoint?: { lat: number; lng: number; name: string } | null;
+  onOpenFavoriteStops?: () => void;
 }
 
 export const TransitMap: React.FC<TransitMapProps> = ({
@@ -63,6 +67,10 @@ export const TransitMap: React.FC<TransitMapProps> = ({
   selectedTransfer,
   allowedMatchStopIds,
   matchedLineETAs,
+  showBuses = true,
+  showStops = true,
+  explorePoint,
+  onOpenFavoriteStops,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -92,6 +100,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
   const routesLayerRef = useRef<L.LayerGroup | null>(null);
   const radiusLayerRef = useRef<L.LayerGroup | null>(null);
   const destinationLayerRef = useRef<L.LayerGroup | null>(null);
+  const exploreLayerRef = useRef<L.LayerGroup | null>(null);
   const d3SvgRef = useRef<SVGSVGElement | null>(null);
   const d3ContainerRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null);
 
@@ -124,6 +133,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     routesLayerRef.current = L.layerGroup().addTo(map);
     radiusLayerRef.current = L.layerGroup().addTo(map);
     destinationLayerRef.current = L.layerGroup().addTo(map);
+    exploreLayerRef.current = L.layerGroup().addTo(map);
     stopsLayerRef.current = L.layerGroup().addTo(map);
     busesLayerRef.current = L.layerGroup().addTo(map);
     userLayerRef.current = L.layerGroup().addTo(map);
@@ -419,12 +429,63 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     group.addLayer(destMarker);
   }, [destinationPoint, searchRadius, onSetDestinationPoint]);
 
+  // Handle Explore Point (when user searches an address to inspect without changing destination)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const group = exploreLayerRef.current;
+    if (!map || !group) return;
+
+    group.clearLayers();
+    if (!explorePoint) return;
+
+    map.flyTo([explorePoint.lat, explorePoint.lng], 16, {
+      animate: true,
+      duration: 1.0,
+    });
+
+    const exploreIcon = L.divIcon({
+      className: 'custom-explore-marker',
+      html: `
+        <div class="relative flex items-center justify-center">
+          <div class="w-10 h-10 rounded-full bg-blue-600 border-2 border-white shadow-2xl flex items-center justify-center text-white text-base animate-bounce">
+            📍
+          </div>
+          <div class="absolute -bottom-1 w-4 h-1.5 bg-black/40 rounded-full blur-[1px]"></div>
+        </div>
+      `,
+      iconSize: [40, 40],
+      iconAnchor: [20, 38],
+    });
+
+    const marker = L.marker([explorePoint.lat, explorePoint.lng], {
+      icon: exploreIcon,
+    });
+
+    marker.bindPopup(`
+      <div class="p-1.5 font-sans text-xs text-slate-800">
+        <div class="flex items-center gap-1.5 font-black text-blue-700">
+          <span class="text-sm">📍</span>
+          <span>${explorePoint.name}</span>
+        </div>
+        <p class="mt-1 text-[11px] text-slate-600">
+          Dirección explorada en el mapa (sin alterar tu destino actual).
+        </p>
+      </div>
+    `);
+
+    group.addLayer(marker);
+    setTimeout(() => {
+      marker.openPopup();
+    }, 400);
+  }, [explorePoint]);
+
   // Update Bus Stops with Origin, Destination and Match visual tags
   useEffect(() => {
     const group = stopsLayerRef.current;
     if (!group) return;
 
     group.clearLayers();
+    if (showStops === false) return;
 
     const originLat = userLocation?.lat ?? center?.[0];
     const originLng = userLocation?.lng ?? center?.[1];
@@ -542,11 +603,21 @@ export const TransitMap: React.FC<TransitMapProps> = ({
         continue;
       }
 
-      // Include viewport stops if zoomed in (up to 350)
+      // Major hubs (Metro, Rodalies, FGC, Nitbus) should ALWAYS be included if within viewport
+      const isMetro = stop.transportType === 'metro' || stop.lines.some((l) => l.startsWith('L') || l === 'FM');
+      const isRodalies = stop.transportType === 'rodalies' || stop.lines.some((l) => l.startsWith('R'));
+      const isFgc = stop.transportType === 'fgc' || stop.lines.some((l) => l.startsWith('S') || ['L6', 'L7', 'L8', 'L12'].includes(l));
+      const isNitbus = stop.transportType === 'nitbus' || stop.lines.some((l) => l.startsWith('N') && l !== 'Navas');
+      const isMajorHub = isMetro || isRodalies || isFgc || isNitbus;
+
       if (paddedBounds && paddedBounds.contains([stop.lat, stop.lng])) {
-        if (mapZoom >= 14 && stopsToRender.length < 350) {
+        if (isMajorHub) {
           stopsToRender.push({ stop, isWithinOrigin: false, isWithinDest: false, isSelected: false, isMatch });
-        } else if (mapZoom < 14 && stopsToRender.length < 60) {
+        } else if (mapZoom >= 14 && stopsToRender.length < 800) {
+          stopsToRender.push({ stop, isWithinOrigin: false, isWithinDest: false, isSelected: false, isMatch });
+        } else if (mapZoom >= 12 && stopsToRender.length < 350) {
+          stopsToRender.push({ stop, isWithinOrigin: false, isWithinDest: false, isSelected: false, isMatch });
+        } else if (mapZoom < 12 && stopsToRender.length < 120) {
           stopsToRender.push({ stop, isWithinOrigin: false, isWithinDest: false, isSelected: false, isMatch });
         }
       }
@@ -557,6 +628,9 @@ export const TransitMap: React.FC<TransitMapProps> = ({
       const matchRole = stopMatchRoles?.get(stop.id);
       const isTransferStop = highlightedTransferStopIds?.has(stop.id);
       const isMetro = stop.transportType === 'metro' || stop.lines.some((l) => l.startsWith('L') || l === 'FM');
+      const isRodalies = stop.transportType === 'rodalies' || stop.lines.some((l) => l.startsWith('R'));
+      const isFgc = stop.transportType === 'fgc' || stop.lines.some((l) => l.startsWith('S') || ['L6', 'L7', 'L8', 'L12'].includes(l));
+      const isNitbus = stop.transportType === 'nitbus' || stop.lines.some((l) => l.startsWith('N') && l !== 'Navas');
       const isStopOnSelectedLine = selectedLine && (
         selectedLine.stops.includes(stop.id) ||
         selectedLine.stops.includes(stop.code) ||
@@ -679,6 +753,12 @@ export const TransitMap: React.FC<TransitMapProps> = ({
                   ? '<span class="text-xs font-black text-indigo-200">🔄</span>'
                   : isMetro
                   ? '<span class="text-xs">🚇</span>'
+                  : isRodalies
+                  ? '<span class="text-xs">🚆</span>'
+                  : isFgc
+                  ? '<span class="text-xs">🚉</span>'
+                  : isNitbus
+                  ? '<span class="text-xs">🌙</span>'
                   : isWithinDest
                   ? '<span class="text-[11px]">🎯</span>'
                   : `
@@ -752,7 +832,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
       group.addLayer(marker);
     });
-  }, [stops, selectedStop, selectedLine, onSelectStop, userLocation, center, searchRadius, mapViewBounds, mapZoom, destinationPoint, matchedLineCodes, stopMatchRoles, highlightedTransferStopIds, allowedMatchStopIds, matchedLineETAs]);
+  }, [stops, selectedStop, selectedLine, onSelectStop, userLocation, center, searchRadius, mapViewBounds, mapZoom, destinationPoint, matchedLineCodes, stopMatchRoles, highlightedTransferStopIds, allowedMatchStopIds, matchedLineETAs, showStops]);
 
   // Update Route Polylines
   useEffect(() => {
@@ -1316,12 +1396,17 @@ export const TransitMap: React.FC<TransitMapProps> = ({
     if (!group) return;
 
     group.clearLayers();
+    if (showBuses === false) return;
 
     buses.forEach((bus) => {
       const line = lines.find((l) => l.code === bus.lineCode);
       const color = line?.color || '#2563eb';
       const isMatched = bus.isMatch || Boolean(matchedLineCodes?.has(bus.lineCode.toUpperCase()));
-      const isMetro = bus.transportType === 'metro' || bus.lineCode.startsWith('L') || bus.lineCode === 'FM' || line?.transportType === 'metro';
+      const isNitbus = bus.transportType === 'nitbus' || bus.lineCode.startsWith('N');
+      const isRodalies = bus.transportType === 'rodalies' || bus.lineCode.startsWith('R');
+      const isFgc = bus.transportType === 'fgc' || bus.lineCode.startsWith('S') || (bus.lineCode.startsWith('L') && parseInt(bus.lineCode.slice(1)) >= 6);
+      const isMetro = !isFgc && (bus.transportType === 'metro' || bus.lineCode.startsWith('L') || bus.lineCode === 'FM' || line?.transportType === 'metro');
+      const modeEmoji = isNitbus ? '🌙' : isRodalies ? '🚆' : isFgc ? '🚉' : isMetro ? '🚇' : isMatched ? '✨' : '🚌';
 
       // Live vehicle icon with directional rotation and Match highlight
       const busIcon = L.divIcon({
@@ -1348,7 +1433,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
             <!-- Main Vehicle Pill -->
             <div class="relative z-20 flex items-center gap-1 px-1.5 py-0.5 rounded-full shadow-lg border-2 ${isMatched ? 'border-amber-300 ring-2 ring-amber-400/60' : 'border-white'} text-white font-extrabold text-[11px] leading-tight select-none" style="background-color: ${color}">
-              <span class="text-[10px]">${isMetro ? '🚇' : isMatched ? '✨' : '🚌'}</span>
+              <span class="text-[10px]">${modeEmoji}</span>
               <span>${bus.lineCode}</span>
             </div>
           </div>
@@ -1365,8 +1450,8 @@ export const TransitMap: React.FC<TransitMapProps> = ({
       marker.bindPopup(`
         <div class="p-1 font-sans text-xs text-slate-800">
           <div class="flex items-center gap-1.5 font-bold" style="color: ${color}">
-            <span class="px-1.5 py-0.5 rounded text-white text-[10px]" style="background-color: ${color}">${isMetro ? '🚇 ' : ''}${bus.lineCode}</span>
-            <span>${line?.name || (isMetro ? 'Línea de Metro' : 'Línea de Autobús')}</span>
+            <span class="px-1.5 py-0.5 rounded text-white text-[10px]" style="background-color: ${color}">${modeEmoji} ${bus.lineCode}</span>
+            <span>${line?.name || (isNitbus ? 'Nitbus Nocturno' : isRodalies ? 'Rodalies Renfe' : isFgc ? 'FGC' : isMetro ? 'Línea de Metro' : 'Línea de Autobús')}</span>
           </div>
 
           ${
@@ -1389,7 +1474,7 @@ export const TransitMap: React.FC<TransitMapProps> = ({
 
       group.addLayer(marker);
     });
-  }, [buses, lines, matchedLineCodes]);
+  }, [buses, lines, matchedLineCodes, showBuses]);
 
   // Center on selected stop when changed
   useEffect(() => {
@@ -1484,6 +1569,19 @@ export const TransitMap: React.FC<TransitMapProps> = ({
         >
           <LocateFixed className={`w-6 h-6 ${isLocating ? 'animate-spin' : ''}`} />
         </button>
+
+        {/* Floating Favorite Stops Button (Directly under GPS button, round icon with star, no text) */}
+        {onOpenFavoriteStops && (
+          <button
+            id="btn-map-favorite-stops"
+            onClick={onOpenFavoriteStops}
+            className="flex items-center justify-center w-12 h-12 rounded-full bg-slate-900/95 hover:bg-slate-800 text-amber-400 border border-amber-500/60 shadow-xl shadow-black/40 active:scale-95 transition-all backdrop-blur-md ring-2 ring-amber-500/20"
+            title="Paradas favoritas a menos de 500m de tu ubicación GPS (tiempos de llegada)"
+            aria-label="Paradas favoritas"
+          >
+            <Star className="w-6 h-6 fill-amber-400 text-amber-400" />
+          </button>
+        )}
       </div>
 
       {/* Network status pill (hidden while setting destination to prevent overlapping messages) */}

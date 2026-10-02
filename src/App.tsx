@@ -68,11 +68,14 @@ import { StopDetailsSheet } from './components/StopDetailsSheet';
 import { FavoritesView } from './components/FavoritesView';
 import { RoutesListView } from './components/RoutesListView';
 import { AlertsView } from './components/AlertsView';
-import { Navbar } from './components/Navbar';
+import { Navbar, VehicleDisplayMode } from './components/Navbar';
 import { BottomNavigation, TabType } from './components/BottomNavigation';
 import { LocationSelectorModal } from './components/LocationSelectorModal';
 import { ProximityAlertBanner } from './components/ProximityAlertBanner';
 import { DestinationMenu } from './components/DestinationMenu';
+import { QuickFavoriteDestinations } from './components/QuickFavoriteDestinations';
+import { AddressSearchModal } from './components/AddressSearchModal';
+import { NearbyFavoriteStopsModal } from './components/NearbyFavoriteStopsModal';
 
 // Icons
 import {
@@ -95,6 +98,8 @@ import {
   ChevronDown,
   WifiOff,
   Bell,
+  Radio,
+  Search,
 } from 'lucide-react';
 
 export default function App() {
@@ -179,6 +184,20 @@ export default function App() {
   const [isSettingDestination, setIsSettingDestination] = useState<boolean>(false);
   const [isDestinationMenuOpen, setIsDestinationMenuOpen] = useState<boolean>(false);
   const [isMatchCardCollapsed, setIsMatchCardCollapsed] = useState<boolean>(false);
+  const [isMatchCardClosed, setIsMatchCardClosed] = useState<boolean>(false);
+  const [showBuses, setShowBuses] = useState<boolean>(true);
+  const [vehicleDisplayMode, setVehicleDisplayMode] = useState<VehicleDisplayMode>('in_radius');
+  const handleCycleVehicleMode = () => {
+    setVehicleDisplayMode((prev) => {
+      if (prev === 'in_radius') return 'all';
+      if (prev === 'all') return 'none';
+      return 'in_radius';
+    });
+  };
+  const [showStops, setShowStops] = useState<boolean>(true);
+  const [isNearbyFavoriteStopsOpen, setIsNearbyFavoriteStopsOpen] = useState<boolean>(false);
+  const [isAddressSearchOpen, setIsAddressSearchOpen] = useState<boolean>(false);
+  const [explorePoint, setExplorePoint] = useState<{ lat: number; lng: number; name: string } | null>(null);
   const [recentDestinations, setRecentDestinations] = useState<RecentDestination[]>(() =>
     getStoredRecentDestinations()
   );
@@ -605,6 +624,7 @@ export default function App() {
     setShowRadiusPopover(false); // Close radius popover
     setSelectedTransfer(null);
     setIsMatchCardCollapsed(false);
+    setIsMatchCardClosed(false);
     const updatedRecents = saveRecentDestination(point);
     setRecentDestinations(updatedRecents);
   };
@@ -624,6 +644,8 @@ export default function App() {
     setDestinationPoint(null);
     setIsSettingDestination(false);
     setSelectedTransfer(null);
+    setIsMatchCardCollapsed(false);
+    setIsMatchCardClosed(false);
     if (settings.busFilterMode === 'matches_only') {
       handleUpdateSettings({ ...settings, busFilterMode: 'in_radius' });
     }
@@ -785,8 +807,12 @@ export default function App() {
     ]);
   }, [selectedTransfer]);
 
-  // Buses to display based on setting: 'in_radius' (default) vs 'matches_only' vs 'all'
+  // Buses to display based on setting: 'none' (sin vehículos) vs 'in_radius' (paradas del radio de acción) vs 'all' (todos)
   const displayedBuses = useMemo(() => {
+    if (vehicleDisplayMode === 'none') {
+      return [];
+    }
+
     // 1. Tag each bus with whether it connects Origin & Destination (Match)
     const taggedBuses = network.buses.map((bus) => {
       const codeUpper = bus.lineCode.toUpperCase();
@@ -797,22 +823,8 @@ export default function App() {
       };
     });
 
-    if (settings.busFilterMode === 'all') {
+    if (vehicleDisplayMode === 'all') {
       return taggedBuses;
-    }
-
-    if (settings.busFilterMode === 'matches_only') {
-      return taggedBuses.filter((bus) => {
-        const codeUpper = bus.lineCode.toUpperCase();
-        return (
-          bus.isMatch ||
-          (selectedLine && selectedLine.code.toUpperCase() === codeUpper) ||
-          (selectedStop && selectedStop.lines.some((l) => l.toUpperCase() === codeUpper)) ||
-          (selectedTransfer &&
-            (selectedTransfer.firstLine.code.toUpperCase() === codeUpper ||
-              selectedTransfer.secondLine.code.toUpperCase() === codeUpper))
-        );
-      });
     }
 
     // Default 'in_radius': buses that serve Origin zone OR Destination zone (if set), or selected
@@ -832,7 +844,7 @@ export default function App() {
     });
   }, [
     network.buses,
-    settings.busFilterMode,
+    vehicleDisplayMode,
     linesServingRadius,
     linesServingDest,
     destinationPoint,
@@ -862,18 +874,36 @@ export default function App() {
     >
       {/* Top Android App Bar */}
       <Navbar
-        cityName={network.cityName}
         isDarkMode={isDarkMode}
         isOffline={isOffline}
-        isGpsActive={isRealGpsActive}
         onToggleTheme={() => setIsDarkMode(!isDarkMode)}
-        onOpenLocationModal={() => setIsLocationModalOpen(true)}
-        onRequestGPS={startGpsTracking}
-        providerLabel={
-          isLoadingTmbNetwork
-            ? 'Cargando TMB...'
-            : `${network.lines.length} líneas · ${network.stops.length} paradas`
-        }
+        onOpenDestination={() => {
+          setIsDestinationMenuOpen(true);
+          setIsMatchCardClosed(false);
+          setIsMatchCardCollapsed(false);
+        }}
+        hasDestination={Boolean(destinationPoint)}
+        destinationName={destinationPoint?.name}
+        vehicleDisplayMode={vehicleDisplayMode}
+        onCycleVehicleMode={handleCycleVehicleMode}
+        searchRadiusMeters={settings.searchRadiusMeters}
+        onOpenRadius={() => setShowRadiusPopover(true)}
+        showStops={showStops}
+        onToggleStops={() => setShowStops((prev) => !prev)}
+        onOpenAddressSearch={() => setIsAddressSearchOpen(true)}
+        providerLabel="TMB · AMB · Renfe · FGC"
+      />
+
+      {/* Quick Favorite Destinations (Casa, Trabajo, Gym, Favorito - aligned to left horizontally) */}
+      <QuickFavoriteDestinations
+        currentDestination={destinationPoint}
+        onSelectDestination={(lat, lng, name) => {
+          handleSetDestinationPoint(lat, lng, name);
+          setIsMatchCardClosed(false);
+          setIsMatchCardCollapsed(false);
+        }}
+        userLocationLat={userLocation?.lat}
+        userLocationLng={userLocation?.lng}
       />
 
       {/* Floating Proximity Alert Banner */}
@@ -921,7 +951,31 @@ export default function App() {
               selectedTransfer={selectedTransfer}
               allowedMatchStopIds={allowedMatchStopIds}
               matchedLineETAs={matchedLineETAs}
+              showBuses={vehicleDisplayMode !== 'none'}
+              showStops={showStops}
+              explorePoint={explorePoint}
+              onOpenFavoriteStops={() => setIsNearbyFavoriteStopsOpen(true)}
             />
+
+            {/* Botón de Paradas recuperado bajo la barra superior */}
+            <div className="absolute top-3 right-4 z-[410]">
+              <button
+                id="btn-toggle-nearby-drawer"
+                onClick={() => setShowNearbyDrawer((prev) => !prev)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
+                  showNearbyDrawer
+                    ? 'bg-emerald-600 border-emerald-400 text-white ring-2 ring-emerald-500/50 shadow-emerald-900/30'
+                    : 'bg-slate-900/90 border-slate-700/80 hover:bg-slate-800 text-slate-200'
+                }`}
+                title="Abrir panel de paradas cercanas con tiempos de llegada"
+              >
+                <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Paradas</span>
+                <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-extrabold border border-emerald-500/30">
+                  {stopsWithinRadius.length}
+                </span>
+              </button>
+            </div>
 
             {/* Offline Status Guide Banner */}
             {isOffline && !isSettingDestination && (
@@ -953,7 +1007,7 @@ export default function App() {
             )}
 
             {/* Floating Destination & Match Hub Card (Lower 50% on mobile leaving top 50% for map, sidebar on desktop) */}
-            {destinationPoint && !isSettingDestination && (
+            {destinationPoint && !isSettingDestination && !isMatchCardClosed && (
               <div
                 className={`absolute bottom-0 left-0 right-0 z-[410] w-full transition-all duration-300 md:top-16 md:bottom-auto md:left-4 md:right-auto md:w-96 md:max-w-sm flex flex-col ${
                   isMatchCardCollapsed
@@ -980,7 +1034,7 @@ export default function App() {
                     </span>
                   </button>
 
-                  {/* Top row: Title, favorite toggle, change and close buttons */}
+                  {/* Top row: Title, favorite toggle, minimize, change, and close buttons */}
                   <div className="flex items-center justify-between gap-1.5 shrink-0">
                     <div className="flex items-center gap-1.5 text-xs font-black text-purple-300 min-w-0">
                       <Target className="w-4 h-4 text-purple-400 shrink-0" />
@@ -1031,8 +1085,18 @@ export default function App() {
                               : 'text-slate-400'
                           }`}
                         />
-                        <span>{isDestinationInFavorites ? 'Favorito' : '+ Fav'}</span>
+                        <span className="hidden sm:inline">{isDestinationInFavorites ? 'Favorito' : '+ Fav'}</span>
                       </button>
+
+                      {/* Minimize toggle button */}
+                      <button
+                        onClick={() => setIsMatchCardCollapsed(!isMatchCardCollapsed)}
+                        className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-purple-300 text-[10px] font-bold transition-all border border-slate-700"
+                        title={isMatchCardCollapsed ? 'Restaurar panel a 50%' : 'Minimizar ventana'}
+                      >
+                        {isMatchCardCollapsed ? '▲' : '–'}
+                      </button>
+
                       <button
                         onClick={() => setIsDestinationMenuOpen(true)}
                         className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-purple-300 text-[10px] font-bold transition-all border border-slate-700"
@@ -1040,16 +1104,46 @@ export default function App() {
                       >
                         Cambiar
                       </button>
+
+                      {/* Close Window button */}
+                      <button
+                        id="btn-close-match-card"
+                        onClick={() => setIsMatchCardClosed(true)}
+                        className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-rose-950/70 text-slate-300 hover:text-rose-200 text-[10px] font-bold transition-all border border-slate-700 flex items-center gap-0.5"
+                        title="Cerrar ventana (el destino sigue activo)"
+                      >
+                        <X className="w-3 h-3" />
+                        <span className="hidden sm:inline">Cerrar</span>
+                      </button>
+
+                      {/* Clear Destination button */}
                       <button
                         id="btn-clear-destination"
                         onClick={handleClearDestinationPoint}
                         className="w-5 h-5 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 text-xs transition-all"
-                        title="Quitar punto de destino"
+                        title="Quitar punto de destino completamente"
                       >
                         ✕
                       </button>
                     </div>
                   </div>
+
+                  {/* Restorable tap bar when minimized */}
+                  {isMatchCardCollapsed && (
+                    <button
+                      onClick={() => setIsMatchCardCollapsed(false)}
+                      className="w-full flex items-center justify-between px-2.5 py-1 rounded-xl bg-purple-950/70 hover:bg-purple-900/80 border border-purple-500/40 text-purple-200 text-xs font-bold transition-all"
+                      title="Restaurar ventana a mitad inferior (50% pantalla)"
+                    >
+                      <span className="flex items-center gap-1.5 truncate">
+                        <Target className="w-3.5 h-3.5 text-purple-400 animate-pulse shrink-0" />
+                        <span className="truncate">{destinationPoint.name || 'Destino fijado'}</span>
+                      </span>
+                      <span className="text-[10px] text-amber-300 font-bold shrink-0 flex items-center gap-1">
+                        ▲ Restaurar (50%)
+                      </span>
+                    </button>
+                  )}
 
                   {/* Distance summary */}
                   <div className="flex items-baseline justify-between text-[11px] text-slate-300">
@@ -1109,29 +1203,76 @@ export default function App() {
                                     className="px-2 py-0.5 rounded-md font-black text-[11px] text-white shrink-0 shadow-sm"
                                     style={{ backgroundColor: eta.color }}
                                   >
-                                    {eta.transportType === 'metro' ? '🚇 ' : ''}{eta.lineCode}
+                                    {eta.transportType === 'metro'
+                                      ? '🚇 '
+                                      : eta.transportType === 'nitbus'
+                                      ? '🌙 '
+                                      : eta.transportType === 'rodalies'
+                                      ? '🚆 '
+                                      : eta.transportType === 'fgc'
+                                      ? '🚉 '
+                                      : ''}
+                                    {eta.lineCode}
                                   </span>
                                   <div className="truncate">
-                                    <div className="font-bold text-white truncate text-xs flex items-center gap-1.5">
+                                    <div className="font-bold text-white truncate text-xs flex items-center gap-1.5 flex-wrap">
                                       <span>{eta.lineName}</span>
                                       {idx === 0 && (
-                                        <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-black border border-amber-500/40">
+                                        <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-black border border-amber-500/40 shrink-0">
                                           ⚡ Más rápida
                                         </span>
                                       )}
+                                      {/* Icono de Estado / Fiabilidad del dato (Requirement: iBus real vs estimación de frecuencia) */}
+                                      {eta.isRealTime || eta.sourceType === 'ibus_real' ? (
+                                        <span
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-black bg-emerald-500/25 text-emerald-300 border border-emerald-500/50 shadow-sm shrink-0"
+                                          title="Tiempo real vía telemetría GPS iBus TMB oficial (Alta fiabilidad)"
+                                        >
+                                          <Radio className="w-2.5 h-2.5 text-emerald-400 animate-pulse" />
+                                          <span>iBus Real</span>
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0"
+                                          title="Tiempo estimado basado en la frecuencia teórica de paso (Orientativo)"
+                                        >
+                                          <Clock className="w-2.5 h-2.5 text-amber-400" />
+                                          <span>Estimado</span>
+                                        </span>
+                                      )}
+                                      {eta.inService === false && (
+                                        <span className="px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 text-[9px] font-bold border border-rose-500/40 shrink-0">
+                                          🌙 Fuera de horario
+                                        </span>
+                                      )}
                                     </div>
-                                    <div className="text-[10px] text-slate-400 truncate">
+                                    <div className="text-[10px] text-slate-400 truncate mt-0.5">
                                       Sube: <strong className="text-slate-200">{eta.originStopName}</strong> ➔ Baja: <strong className="text-slate-200">{eta.destStopName}</strong>
                                     </div>
                                   </div>
                                 </div>
-                                <div className="text-right shrink-0">
+                                <div className="text-right shrink-0 flex flex-col items-end">
                                   <div className="font-black text-amber-300 text-xs flex items-center justify-end gap-1">
                                     <Clock className="w-3 h-3 text-amber-400" />
                                     <span>~{eta.totalTravelMinutes} min a destino</span>
                                   </div>
-                                  <div className="text-[9px] text-emerald-400 font-bold mt-0.5">
-                                    Llega en {eta.nextArrivalMinutes} min · Sig: {eta.subsequentArrivalMinutes}m
+                                  <div className="text-[9px] text-emerald-400 font-bold mt-0.5 flex items-center gap-1">
+                                    <span>Llega en {eta.nextArrivalMinutes} min</span>
+                                    <span className="text-slate-500">·</span>
+                                    <span className="text-slate-400 font-normal">Sig: {eta.subsequentArrivalMinutes}m</span>
+                                  </div>
+                                  {/* Reliability status indicator pill on the arrival column */}
+                                  <div className="mt-0.5">
+                                    {eta.isRealTime || eta.sourceType === 'ibus_real' ? (
+                                      <span className="text-[9px] text-emerald-400 font-bold flex items-center gap-0.5">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping inline-block" />
+                                        <span>GPS en vivo</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] text-amber-400/90 font-medium">
+                                        Frecuencia teórica
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                               </div>
@@ -1272,116 +1413,74 @@ export default function App() {
               </div>
             )}
 
-            {/* Floating Top Controls: Radius, Destination & Bus Filter Bar (Hidden when setting destination to prevent overlapping messages) */}
-            {!isSettingDestination && (
-              <div className="absolute top-4 right-4 z-[400] flex items-center gap-1.5 sm:gap-2 max-w-[calc(100vw-2rem)] flex-wrap justify-end">
-                {/* Destination Point Button */}
+            {/* Floating Restore Pill when Match Hub is closed (Requirement 1: restaurar ventana) */}
+            {destinationPoint && !isSettingDestination && isMatchCardClosed && (
+              <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-[420] flex items-center gap-1.5 p-1.5 bg-slate-900/95 border border-purple-500/60 rounded-full shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-200">
                 <button
-                  id="btn-toggle-destination"
                   onClick={() => {
-                    setIsDestinationMenuOpen(true);
+                    setIsMatchCardClosed(false);
+                    setIsMatchCardCollapsed(false);
                   }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
-                    destinationPoint
-                      ? 'bg-purple-950/90 hover:bg-purple-900 text-purple-300 border-purple-500/60 ring-1 ring-purple-500/30'
-                      : 'bg-slate-900/90 hover:bg-slate-800 text-purple-300 border-slate-700/80'
-                  }`}
-                  title={destinationPoint ? 'Punto de destino fijado. Clic para cambiar o ver opciones.' : 'Fijar un destino frecuente o marcar en el mapa'}
+                  className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md active:scale-95 transition-all"
+                  title="Restaurar ventana de Matches y Destino"
                 >
-                  <Target className="w-3.5 h-3.5 text-purple-400" />
-                  <span>
-                    {destinationPoint
-                      ? `Destino: ${formatDistance(distanceOriginToDest || 0)}`
-                      : '+ Fijar Destino'}
+                  <Target className="w-4 h-4 text-purple-200 animate-pulse shrink-0" />
+                  <span className="truncate max-w-[150px] sm:max-w-[200px]">
+                    Restaurar: {destinationPoint.name || 'Destino'}
                   </span>
-                  <ChevronDown className="w-3 h-3 text-purple-400" />
+                  <span className="px-1.5 py-0.2 rounded-full bg-purple-900 text-[10px] text-purple-200 font-black shrink-0">
+                    {matchedLines.length} {matchedLines.length === 1 ? 'Match' : 'Matches'}
+                  </span>
                 </button>
-
-              {/* Quick Bus Filter Toggle Button */}
-              <button
-                id="btn-toggle-bus-filter"
-                onClick={() => {
-                  let nextMode: UserSettings['busFilterMode'] = 'in_radius';
-                  if (destinationPoint && matchedLines.length > 0) {
-                    if (settings.busFilterMode === 'in_radius') nextMode = 'matches_only';
-                    else if (settings.busFilterMode === 'matches_only') nextMode = 'all';
-                    else nextMode = 'in_radius';
-                  } else {
-                    nextMode = settings.busFilterMode === 'in_radius' ? 'all' : 'in_radius';
-                  }
-                  handleUpdateSettings({ ...settings, busFilterMode: nextMode });
-                }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
-                  settings.busFilterMode === 'matches_only'
-                    ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400/50 font-black'
-                    : settings.busFilterMode === 'in_radius'
-                    ? 'bg-slate-900/90 hover:bg-slate-800 text-amber-300 border-amber-500/50 ring-1 ring-amber-500/20'
-                    : 'bg-blue-600 text-white border-blue-400 hover:bg-blue-500'
-                }`}
-                title={
-                  settings.busFilterMode === 'matches_only'
-                    ? `Mostrando solo autobuses con Match directo (${displayedBuses.length}). Clic para ver todos.`
-                    : settings.busFilterMode === 'in_radius'
-                    ? `Mostrando autobuses de zonas activas (${displayedBuses.length}). Clic para alternar.`
-                    : `Mostrando todos los autobuses (${network.buses.length}). Clic para filtrar.`
-                }
-              >
-                <Bus className={`w-3.5 h-3.5 ${settings.busFilterMode === 'matches_only' ? 'text-slate-950' : 'text-amber-400'}`} />
-                <span>
-                  {settings.busFilterMode === 'matches_only'
-                    ? `Buses: Solo Match (${displayedBuses.length})`
-                    : settings.busFilterMode === 'in_radius'
-                    ? `Buses: En radio (${displayedBuses.length})`
-                    : `Buses: Todos (${network.buses.length})`}
-                </span>
-              </button>
-
-              {/* Quick Search Radius Selector Button & Popover */}
-              <div className="relative">
                 <button
-                  id="btn-toggle-radius-modal"
-                  onClick={() => {
-                    setShowRadiusPopover(!showRadiusPopover);
-                    setShowNearbyDrawer(false);
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold shadow-xl active:scale-95 transition-all ${
-                    showRadiusPopover
-                      ? 'bg-blue-600 text-white border-blue-400'
-                      : 'bg-slate-900/90 hover:bg-slate-800 text-blue-300 border-slate-700/80'
-                  }`}
-                  title="Configurar radio de búsqueda"
+                  onClick={handleClearDestinationPoint}
+                  className="w-7 h-7 rounded-full bg-slate-800 hover:bg-rose-950/50 hover:text-rose-300 text-slate-400 flex items-center justify-center text-xs transition-colors shrink-0"
+                  title="Quitar destino actual del mapa"
                 >
-                  <Compass className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Radio: {formatDistance(settings.searchRadiusMeters)}</span>
+                  ✕
                 </button>
+              </div>
+            )}
 
-                {/* Floating Radius Popover */}
-                {showRadiusPopover && (
-                  <div
-                    id="radius-popover"
-                    className="absolute top-10 right-0 w-72 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-4 shadow-2xl z-[460] space-y-3 animate-in fade-in zoom-in-95 duration-150"
-                  >
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-white">
-                        <Compass className="w-4 h-4 text-blue-400" />
-                        <span>Radio de Búsqueda</span>
+            {/* Modal de Configuración de Radio (Garantizado 100% dentro de la pantalla siempre) */}
+            {showRadiusPopover && (
+              <div
+                className="fixed inset-0 z-[650] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+                onClick={() => setShowRadiusPopover(false)}
+              >
+                <div
+                  id="radius-modal-dialog"
+                  className="w-full max-w-sm max-h-[85vh] overflow-y-auto bg-slate-900 border border-slate-700/80 rounded-3xl p-5 shadow-2xl space-y-4 text-white animate-in zoom-in-95 duration-150"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-full bg-blue-500/20 border border-blue-400/40 flex items-center justify-center text-blue-300">
+                        <Compass className="w-4 h-4" />
                       </div>
-                      <button
-                        onClick={() => setShowRadiusPopover(false)}
-                        className="text-xs text-slate-400 hover:text-white"
-                      >
-                        ✕
-                      </button>
+                      <div>
+                        <h3 className="text-sm font-black text-white">Radio de Búsqueda</h3>
+                        <p className="text-[10px] text-slate-400">Alcance de paradas y líneas en origen y destino</p>
+                      </div>
                     </div>
+                    <button
+                      onClick={() => setShowRadiusPopover(false)}
+                      className="w-7 h-7 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center text-xs transition-colors"
+                    >
+                      ✕
+                    </button>
+                  </div>
 
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">Distancia actual:</span>
-                      <span className="font-bold text-blue-400 text-sm">
-                        {formatDistance(settings.searchRadiusMeters)}
-                      </span>
-                    </div>
+                  <div className="flex items-center justify-between text-xs bg-slate-950/50 p-2.5 rounded-xl border border-slate-800">
+                    <span className="text-slate-400 font-medium">Distancia actual:</span>
+                    <span className="font-extrabold text-blue-400 text-sm">
+                      ±{formatDistance(settings.searchRadiusMeters)}
+                    </span>
+                  </div>
 
-                    {/* Quick presets */}
+                  {/* Presets */}
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-semibold text-slate-400">Accesos rápidos:</span>
                     <div className="grid grid-cols-3 gap-1.5">
                       {[300, 500, 800, 1000, 1500, 2500].map((dist) => (
                         <button
@@ -1389,9 +1488,9 @@ export default function App() {
                           onClick={() => {
                             handleUpdateSettings({ ...settings, searchRadiusMeters: dist });
                           }}
-                          className={`py-1.5 px-1 text-[11px] font-semibold rounded-lg border transition-all ${
+                          className={`py-2 px-1 text-xs font-bold rounded-xl border transition-all active:scale-95 ${
                             settings.searchRadiusMeters === dist
-                              ? 'bg-blue-600 text-white border-blue-400 font-bold'
+                              ? 'bg-blue-600 text-white border-blue-400 font-black shadow-md shadow-blue-900/30'
                               : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:border-slate-600'
                           }`}
                         >
@@ -1399,97 +1498,96 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                  </div>
 
-                    {/* Slider */}
-                    <div className="space-y-1 pt-1">
-                      <input
-                        type="range"
-                        min="100"
-                        max="5000"
-                        step="50"
-                        value={settings.searchRadiusMeters}
-                        onChange={(e) =>
-                          handleUpdateSettings({ ...settings, searchRadiusMeters: Number(e.target.value) })
-                        }
-                        className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                      />
-                      <div className="flex justify-between text-[10px] text-slate-500">
-                        <span>100 m</span>
-                        <span>1 km</span>
-                        <span>5 km</span>
-                      </div>
+                  {/* Slider */}
+                  <div className="space-y-1 pt-1">
+                    <div className="flex justify-between text-xs font-semibold text-slate-300">
+                      <span>Ajuste con deslizador</span>
+                      <span className="text-blue-400 font-bold">{settings.searchRadiusMeters} m</span>
                     </div>
-
-                    <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800 text-center">
-                      <span className="text-emerald-400 font-bold">{stopsWithinRadius.length}</span> de {network.stops.length} paradas en este radio
-                    </div>
-
-                    {/* Bus filter mode option inside popover */}
-                    <div className="pt-2 border-t border-slate-800 space-y-1.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-semibold text-slate-300">Autobuses en el mapa:</span>
-                        <span className="text-[11px] font-bold text-amber-400">
-                          {displayedBuses.length} visibles
-                        </span>
-                      </div>
-                      <div className={`grid ${destinationPoint ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
-                        <button
-                          id="btn-popover-bus-in-radius"
-                          onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'in_radius' })}
-                          className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
-                            settings.busFilterMode === 'in_radius'
-                              ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
-                              : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
-                          }`}
-                        >
-                          <Check className={`w-3 h-3 ${settings.busFilterMode === 'in_radius' ? 'opacity-100' : 'opacity-0'}`} />
-                          <span>{destinationPoint ? 'En zonas' : 'En mi radio'}</span>
-                        </button>
-                        {destinationPoint && (
-                          <button
-                            id="btn-popover-bus-matches"
-                            onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'matches_only' })}
-                            className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
-                              settings.busFilterMode === 'matches_only'
-                                ? 'bg-amber-500 text-slate-950 border-amber-300 font-bold shadow-sm'
-                                : 'bg-slate-800/80 text-amber-300 border-slate-700 hover:text-white'
-                            }`}
-                          >
-                            <Check className={`w-3 h-3 ${settings.busFilterMode === 'matches_only' ? 'opacity-100' : 'opacity-0'}`} />
-                            <span>Matches ({matchedLines.length})</span>
-                          </button>
-                        )}
-                        <button
-                          id="btn-popover-bus-all"
-                          onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'all' })}
-                          className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
-                            settings.busFilterMode === 'all'
-                              ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
-                              : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
-                          }`}
-                        >
-                          <Check className={`w-3 h-3 ${settings.busFilterMode === 'all' ? 'opacity-100' : 'opacity-0'}`} />
-                          <span>Todos</span>
-                        </button>
-                      </div>
+                    <input
+                      type="range"
+                      min="100"
+                      max="5000"
+                      step="50"
+                      value={settings.searchRadiusMeters}
+                      onChange={(e) =>
+                        handleUpdateSettings({ ...settings, searchRadiusMeters: Number(e.target.value) })
+                      }
+                      className="w-full h-2.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    />
+                    <div className="flex justify-between text-[10px] text-slate-500">
+                      <span>100 m</span>
+                      <span>1.0 km</span>
+                      <span>5.0 km</span>
                     </div>
                   </div>
-                )}
-              </div>
 
-              {/* Nearby Stops Drawer Toggle Button */}
-              <button
-                id="btn-toggle-nearby-drawer"
-                onClick={() => {
-                  setShowNearbyDrawer(!showNearbyDrawer);
-                  setShowRadiusPopover(false);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 backdrop-blur-md border border-slate-700/80 text-xs font-bold text-white shadow-xl active:scale-95 transition-all"
-              >
-                <ListFilter className="w-3.5 h-3.5 text-blue-400" />
-                <span>Paradas ({stopsWithinRadius.length})</span>
-              </button>
-            </div>
+                  <div className="text-[11px] text-slate-400 pt-1 border-t border-slate-800 text-center">
+                    <span className="text-emerald-400 font-bold">{stopsWithinRadius.length}</span> de {network.stops.length} paradas en este radio
+                  </div>
+
+                  {/* Bus filter mode option */}
+                  <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-300">Autobuses en el mapa:</span>
+                      <span className="text-[11px] font-bold text-amber-400">
+                        {displayedBuses.length} visibles
+                      </span>
+                    </div>
+                    <div className={`grid ${destinationPoint ? 'grid-cols-3' : 'grid-cols-2'} gap-1.5`}>
+                      <button
+                        id="btn-modal-bus-in-radius"
+                        onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'in_radius' })}
+                        className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                          settings.busFilterMode === 'in_radius'
+                            ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
+                            : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                      >
+                        <Check className={`w-3 h-3 ${settings.busFilterMode === 'in_radius' ? 'opacity-100' : 'opacity-0'}`} />
+                        <span>{destinationPoint ? 'En zonas' : 'En radio'}</span>
+                      </button>
+                      {destinationPoint && (
+                        <button
+                          id="btn-modal-bus-matches"
+                          onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'matches_only' })}
+                          className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                            settings.busFilterMode === 'matches_only'
+                              ? 'bg-amber-500 text-slate-950 border-amber-300 font-bold shadow-sm'
+                              : 'bg-slate-800/80 text-amber-300 border-slate-700 hover:text-white'
+                          }`}
+                        >
+                          <Check className={`w-3 h-3 ${settings.busFilterMode === 'matches_only' ? 'opacity-100' : 'opacity-0'}`} />
+                          <span>Matches ({matchedLines.length})</span>
+                        </button>
+                      )}
+                      <button
+                        id="btn-modal-bus-all"
+                        onClick={() => handleUpdateSettings({ ...settings, busFilterMode: 'all' })}
+                        className={`py-1.5 px-1.5 text-[10px] font-semibold rounded-lg border flex items-center justify-center gap-1 transition-all ${
+                          settings.busFilterMode === 'all'
+                            ? 'bg-blue-600 text-white border-blue-400 font-bold shadow-sm'
+                            : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                      >
+                        <Check className={`w-3 h-3 ${settings.busFilterMode === 'all' ? 'opacity-100' : 'opacity-0'}`} />
+                        <span>Todos</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800">
+                    <button
+                      onClick={() => setShowRadiusPopover(false)}
+                      className="w-full py-2.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-lg shadow-blue-900/30 active:scale-95 transition-all"
+                    >
+                      Aceptar
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Quick Nearby Stops Drawer Overlay */}
@@ -1693,7 +1791,7 @@ export default function App() {
         isRealGpsActive={isRealGpsActive}
       />
 
-      {/* Destination Menu Dropdown Modal (Recent 3 destinations, favorites, map picker) */}
+      {/* Destination Menu Dropdown Modal (Recent 3 destinations, favorites, map picker, address search) */}
       <DestinationMenu
         isOpen={isDestinationMenuOpen}
         onClose={() => setIsDestinationMenuOpen(false)}
@@ -1714,6 +1812,41 @@ export default function App() {
         favoriteDestinations={favoriteDestinations}
         onAddFavorite={handleAddDestinationFavorite}
         onRemoveFavorite={handleRemoveDestinationFavorite}
+        onOpenAddressSearch={() => setIsAddressSearchOpen(true)}
+      />
+
+      {/* Nearby Favorite Stops Modal (Fullscreen, within 500m of GPS, arrival times on click) */}
+      <NearbyFavoriteStopsModal
+        isOpen={isNearbyFavoriteStopsOpen}
+        onClose={() => setIsNearbyFavoriteStopsOpen(false)}
+        userLocation={userLocation}
+        stops={network.stops}
+        lines={network.lines}
+        buses={network.buses}
+        favorites={favorites}
+        onToggleFavorite={handleToggleFavoriteStop}
+        onSelectStopOnMap={(stop) => {
+          handleSelectStop(stop);
+          setActiveTab('map');
+        }}
+      />
+
+      {/* Address Search Modal (Search address, with options to set as destination or explore without destination) */}
+      <AddressSearchModal
+        isOpen={isAddressSearchOpen}
+        onClose={() => setIsAddressSearchOpen(false)}
+        userLat={userLocation?.lat}
+        userLng={userLocation?.lng}
+        onSelectAsDestination={(lat, lng, name) => {
+          handleSetDestinationPoint(lat, lng, name);
+          setIsMatchCardClosed(false);
+          setIsMatchCardCollapsed(false);
+          setActiveTab('map');
+        }}
+        onExploreLocation={(lat, lng, name) => {
+          setExplorePoint({ lat, lng, name });
+          setActiveTab('map');
+        }}
       />
     </div>
   );
